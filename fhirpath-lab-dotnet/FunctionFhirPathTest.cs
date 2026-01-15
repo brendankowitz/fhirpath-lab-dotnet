@@ -1,492 +1,411 @@
-using System;
-using System.IO;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Azure.WebJobs;
-using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
-using Hl7.Fhir.NetCoreApi.R4;
 using System.Net;
-using Hl7.Fhir.Model;
-using Hl7.Fhir.WebApi;
-using System.Buffers;
-using Hl7.Fhir.ElementModel;
-using Hl7.Fhir.FhirPath;
-using Hl7.Fhir.Serialization;
-using Hl7.Fhir.Utility;
-using Hl7.FhirPath.Expressions;
-using Hl7.FhirPath;
-using System.Collections.Generic;
-using System.Linq;
-using Hl7.Fhir.Rest;
-using Hl7.Fhir.Specification.Source;
-using Microsoft.AspNetCore.Mvc.Formatters;
-using System.Text;
-using Microsoft.Net.Http.Headers;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Logging;
+using Ignixa.Abstractions;
+using Ignixa.FhirPath.Evaluation;
+using Ignixa.FhirPath.Parser;
+using Ignixa.Serialization;
+using Ignixa.Serialization.Models;
+using Ignixa.Serialization.SourceNodes;
 
-namespace FhirPathLab_DotNetEngine
+namespace FhirPathLab_DotNetEngine;
+
+public class FunctionFhirPathTest
 {
-    public static class FunctionFhirPathTest
+    private readonly ILogger<FunctionFhirPathTest> _logger;
+    private static readonly FhirPathParser _fhirPathParser = new();
+    private static readonly FhirPathEvaluator _evaluator = new();
+    private static readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
+    private static readonly string _evaluatorVersion = GetEvaluatorVersion();
 
+    public FunctionFhirPathTest(ILogger<FunctionFhirPathTest> logger)
     {
-        [FunctionName("FHIRPathTester-CapabilityStatement")]
-        public static async Task<IActionResult> RunCapabilityStatement(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "metadata")] HttpRequest req,
-            ILogger log)
+        _logger = logger;
+    }
+
+    private static string GetEvaluatorVersion()
+    {
+        var assembly = typeof(FhirPathEvaluator).Assembly;
+        var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString()
+            ?? "unknown";
+        return $"Ignixa-{version}";
+    }
+
+    [Function("FHIRPathTester-CapabilityStatement")]
+    public IActionResult RunCapabilityStatement(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "metadata")] HttpRequest req)
+    {
+        _logger.LogInformation("CapabilityStatement");
+
+        var capabilityStatement = new JsonObject
         {
-            log.LogInformation("CapabilityStatement");
+            ["resourceType"] = "CapabilityStatement",
+            ["title"] = "FHIRPath Lab DotNet expression evaluator (Ignixa)",
+            ["status"] = "active",
+            ["date"] = "2026-01-15",
+            ["kind"] = "instance",
+            ["fhirVersion"] = "4.0.1",
+            ["format"] = new JsonArray { "application/fhir+json" },
+            ["rest"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["mode"] = "server",
+                    ["security"] = new JsonObject { ["cors"] = true },
+                    ["operation"] = new JsonArray
+                    {
+                        new JsonObject
+                        {
+                            ["name"] = "fhirpath",
+                            ["definition"] = "http://fhirpath-lab.org/OperationDefinition/fhirpath"
+                        }
+                    }
+                }
+            }
+        };
 
-            var resultResource = new CapabilityStatement
-            {
-                Title = "FHIRPath Lab DotNet expression evaluator",
-                Status = PublicationStatus.Active,
-                Date = "2022-07-12",
-                Kind = CapabilityStatementKind.Instance,
-                FhirVersion = FHIRVersion.N4_0_1,
-                Format = new[] { "application/fhir+json" }
-            };
-            resultResource.Rest.Add(new CapabilityStatement.RestComponent()
-            {
-                Mode = CapabilityStatement.RestfulCapabilityMode.Server,
-                Security = new CapabilityStatement.SecurityComponent { Cors = true }
-            });
-            resultResource.Rest[0].Operation.Add(new CapabilityStatement.OperationComponent()
-            {
-                Name = "fhirpath",
-                Definition = "http://fhirpath-lab.org/OperationDefinition/fhirpath"
-            });
-            resultResource.ResourceBase = new Uri($"{req.Scheme}://{req.Host}/api");
+        return new ContentResult
+        {
+            Content = capabilityStatement.ToJsonString(_jsonOptions),
+            ContentType = "application/fhir+json",
+            StatusCode = (int)HttpStatusCode.OK
+        };
+    }
 
-            var result = new FhirObjectResult(HttpStatusCode.OK, resultResource);
-            result.ContentTypes.Add(new Microsoft.Net.Http.Headers.MediaTypeHeaderValue("application/fhir+json"));
-            result.Formatters.Add(new JsonFhirOutputFormatter(ArrayPool<char>.Shared));
-            return result;
+    [Function("FHIRPathTester")]
+    public async Task<IActionResult> RunFhirPathTest(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath")] HttpRequest req)
+    {
+        _logger.LogInformation("FhirPath Expression dotnet Evaluation (Ignixa)");
+
+        ParametersJsonNode operationParameters;
+        if (req.Method != "POST")
+        {
+            // Read the parameters from the request query string
+            operationParameters = new ParametersJsonNode();
+            foreach (var key in req.Query.Keys)
+            {
+                var param = new ParameterJsonNode { Name = key };
+                param.SetValue("valueString", req.Query[key].ToString());
+                operationParameters.Parameter.Add(param);
+            }
+        }
+        else
+        {
+            // Read the FHIR parameters resource from the request body
+            operationParameters = await JsonSourceNodeFactory.ParseAsync<ParametersJsonNode>(req.Body, CancellationToken.None);
         }
 
-        [FunctionName("FHIRPathTester")]
-        public static async Task<IActionResult> RunFhirPathTest(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath")] HttpRequest req,
-            ILogger log)
+        var resourceParam = operationParameters.FindParameter("resource");
+        var contextParam = operationParameters.FindParameter("context");
+        var expressionParam = operationParameters.FindParameter("expression");
+        var terminologyParam = operationParameters.FindParameter("terminologyserver");
+        var variablesParam = operationParameters.FindParameter("variables");
+
+        ResourceJsonNode? resource = resourceParam?.Resource;
+        string? resourceId = resource == null ? resourceParam?.GetValueAs<string>() : null;
+        string? context = contextParam?.GetValueAs<string>();
+        string? expression = expressionParam?.GetValueAs<string>();
+        string? terminologyServerUrl = terminologyParam?.GetValueAs<string>();
+
+        // Load resource from remote server if URL provided
+        if (resource == null && !string.IsNullOrEmpty(resourceId) && resourceId.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
-            log.LogInformation("FhirPath Expression dotnet Evaluation");
-
-            Parameters operationParameters = new Parameters();
-            if (req.Method != "POST")
-            {
-                // read the parameters from the request query string
-                foreach (var item in req.TupledParameters())
-                {
-                    operationParameters.Add(item.Key, new FhirString(item.Value));
-                }
-            }
-            else
-            {
-                // read the FHIR parameters resource from the request body
-                using (var stream = SerializationUtil.JsonReaderFromStream(req.Body))
-                {
-                    operationParameters = await _jsParser.ParseAsync<Parameters>(stream);
-                }
-            }
-
-            Resource resource = operationParameters.GetResource("resource");
-            string resourceId = operationParameters.GetString("resource");
-            string terminologyServerUrl = operationParameters.GetString("terminologyserver");
-            if (resource == null && !string.IsNullOrEmpty(resourceId))
-            {
-                // load the resource from another server
-                ResourceIdentity ri = new ResourceIdentity(resourceId);
-                if (!string.IsNullOrEmpty(ri.BaseUri?.OriginalString))
-                {
-                    try
-                    {
-                        var remoteServer = new FhirClient(ri.BaseUri, new FhirClientSettings() { VerifyFhirVersion = false });
-                        resource = remoteServer.Get(ri);
-                    }
-                    catch (FhirOperationException fex)
-                    {
-                        OperationOutcome outcome = new OperationOutcome();
-                        outcome.Issue.Add(new OperationOutcome.IssueComponent()
-                        {
-                            Severity = OperationOutcome.IssueSeverity.Error,
-                            Code = OperationOutcome.IssueType.NotFound,
-                            Details = new CodeableConcept() { Text = $"Unable to retrieve resource {resourceId}" },
-                            Diagnostics = resourceId
-                        });
-                        var br = new FhirObjectResult(HttpStatusCode.BadRequest, outcome, outcome);
-                        br.Formatters.Add(new JsonFhirOutputFormatter(ArrayPool<char>.Shared));
-                        return br;
-                    }
-                }
-            }
-
-            var resultResource = EvaluateFhirPathTesterExpression(resourceId, resource, operationParameters.GetString("context"), operationParameters.GetString("expression"), terminologyServerUrl, operationParameters.Parameter.FirstOrDefault(p => p.Name == "variables"));
-            resultResource.ResourceBase = new Uri($"{req.Scheme}://{req.Host}/api");
-
-            var result = new FhirObjectResult(HttpStatusCode.OK, resultResource);
-            result.ContentTypes.Add(new Microsoft.Net.Http.Headers.MediaTypeHeaderValue("application/fhir+json"));
-            result.Formatters.Add(new JsonFhirOutputFormatter(ArrayPool<char>.Shared));
-            return result;
-        }
-
-        const string exturlJsonValue = "http://fhir.forms-lab.com/StructureDefinition/json-value";
-        public static Resource EvaluateFhirPathTesterExpression(string resourceId, Resource resource, string context, string expression, string terminologyServerUrl, Parameters.ParameterComponent pcVariables)
-        {
-            Hl7.Fhir.FhirPath.ElementNavFhirExtensions.PrepareFhirSymbolTableFunctions();
-            var result = new Parameters() { Id = "fhirpath" };
-            var configParameters = new Parameters.ParameterComponent() { Name = "parameters" };
-            result.Parameter.Add(configParameters);
-            configParameters.Part.Add(new Parameters.ParameterComponent() { Name = "evaluator", Value = new FhirString("Firely-4.2.1") });
-            if (!string.IsNullOrEmpty(context))
-                configParameters.Part.Add(new Parameters.ParameterComponent() { Name = "context", Value = new FhirString(context) });
-            configParameters.Part.Add(new Parameters.ParameterComponent() { Name = "expression", Value = new FhirString(expression) });
-            if (!string.IsNullOrEmpty(resourceId))
-                configParameters.Part.Add(new Parameters.ParameterComponent() { Name = "resource", Value = new FhirString(resourceId) });
-            else if (resource != null)
-                configParameters.Part.Add(new Parameters.ParameterComponent() { Name = "resource", Resource = resource });
-            if (!string.IsNullOrEmpty(terminologyServerUrl))
-                configParameters.Part.Add(new Parameters.ParameterComponent() { Name = "terminologyServerUrl", Value = new FhirString(terminologyServerUrl) });
-            if (pcVariables != null)
-                configParameters.Part.Add(pcVariables);
-
-            // op outcome just in case we get really bad issues
-            OperationOutcome outcome = new OperationOutcome();
-            outcome.SetAnnotation(HttpStatusCode.BadRequest);
-            // outcome.SetAnnotation(new AnnotationSourceResource() { ValidatingResource = result });
-
-            ScopedNode inputNav;
-            FhirEvaluationContext evalContext;
-            if (resource != null)
-            {
-                // result.Parameter.Add(new Parameters.ParameterComponent() { Name = "input", Resource = resource });
-                inputNav = new ScopedNode(TypedSerialization.ToTypedElement(resource));
-                evalContext = new FhirEvaluationContext(inputNav);
-            }
-            else
-            {
-                inputNav = null;
-                evalContext = new FhirEvaluationContext();
-            }
-
-            SymbolTable symbolTable = new SymbolTable(FhirPathCompiler.DefaultSymbolTable);
-            var te = new FhirPathTerminologies() { TerminologyServerUrl = terminologyServerUrl ?? "https://sqlonfhir-r4.azurewebsites.net/fhir" };
-            symbolTable.AddVar("terminologies", te);
-            symbolTable.Add("expand", (FhirPathTerminologies e, string can, string p) =>
-            {
-                var result = te.Expand(can, p);
-                if (result != null)
-                    return TypedSerialization.ToTypedElement(result);
-                return null;
-            });
-            symbolTable.Add("expand", (FhirPathTerminologies e, string can) =>
-            {
-                var result = te.Expand(can, "");
-                if (result != null)
-                    return TypedSerialization.ToTypedElement(result);
-                return null;
-            });
-
-            symbolTable.Add("lookup", (ITypedElement a, ITypedElement b, ITypedElement c) => te.Lookup(a, b, c));
-            symbolTable.Add("lookup", (ITypedElement a, ITypedElement b) => te.Lookup(a, b));
-            symbolTable.Add("lookup", (ITypedElement a) => te.Lookup(a));
-
-            // Add variables from the operation parameters
-            if (pcVariables?.Part != null)
-            {
-                foreach (var varParam in pcVariables.Part)
-                {
-                    var fragmentContent = varParam.GetStringExtension(exturlJsonValue);
-                    if (!string.IsNullOrEmpty(fragmentContent))
-                    {
-                        // need to parse out this json fragment and add this as arbitrary content
-                        ISourceNode fv = null;
-                        if (fragmentContent.Trim().StartsWith("[") || !fragmentContent.Trim().StartsWith("{"))
-                        {
-                            fragmentContent = $"{{ value: {fragmentContent}}}";
-                            fv = FhirJsonNode.Parse(fragmentContent, "value");
-                            symbolTable.AddVariable(varParam.Name, fv.ToTypedElement().Children());
-                        }
-                        else
-                        {
-                            fv = FhirJsonNode.Parse(fragmentContent, "value");
-                            // Questionnaire_PrePopulate_Observation.AddVariable(symbolTable, varParam.Name, fv.ToTypedElement().Children());
-                            symbolTable.AddVar(varParam.Name, fv.ToTypedElement());
-                        }
-                        System.Diagnostics.Trace.WriteLine(fragmentContent);
-                    }
-                    else if (varParam.Value != null)
-                        symbolTable.AddVar(varParam.Name, varParam.Value.ToTypedElement());
-                    else if (varParam.Resource != null)
-                        symbolTable.AddVar(varParam.Name, varParam.Resource.ToTypedElement());
-                    else
-                        symbolTable.AddVar(varParam.Name, null);
-                }
-            }
-
-            // Register the tracer in the eval Context
-            List<KeyValuePair<string, IEnumerable<ITypedElement>>> traceList = new List<KeyValuePair<string, IEnumerable<ITypedElement>>>();
-            evalContext.Tracer = (name, values) =>
-            {
-                traceList.Add(new KeyValuePair<string, IEnumerable<ITypedElement>>(name, values.ToList()));
-            };
-
-            Dictionary<string, ITypedElement> resolvedItems = new Dictionary<string, ITypedElement>();
-            evalContext.ElementResolver = (referenceValue) =>
-            {
-                if (resolvedItems.ContainsKey(referenceValue)) return resolvedItems[referenceValue];
-                if (referenceValue?.StartsWith("http") == true)
-                {
-                    try
-                    {
-                        WebResolver wr = new WebResolver();
-                        var t = wr.ResolveByUri(referenceValue);
-                        if (t != null)
-                        {
-                            var tv = new ScopedNode(TypedSerialization.ToTypedElement(t));
-                            resolvedItems.Add(referenceValue, tv);
-                            return tv;
-                        }
-                    }
-                    catch (FhirOperationException fex)
-                    {
-                        result.Parameter.Add(new Parameters.ParameterComponent() { Name = "error", Value = new FhirString($"Resource '{referenceValue}' unble to be resolved:\r\n{fex.Message}") });
-                        return null;
-                    }
-                }
-                if (referenceValue?.StartsWith("#") == true && resource is DomainResource dr)
-                {
-                    // locate the contained resource
-                    var cr = dr.Contained?.FirstOrDefault(r => "#" + r.Id == referenceValue);
-                    if (cr != null)
-                    {
-                        var tv = new ScopedNode(TypedSerialization.ToTypedElement(cr));
-                        resolvedItems.Add(referenceValue, tv);
-                        return tv;
-                    }
-                }
-                return null;
-            };
-
-            // compile the expression
-            CompiledExpression xps = null;
-            var compiler = new FhirPathCompiler(symbolTable);
             try
             {
-                xps = compiler.Compile(expression);
+                using var httpClient = new HttpClient();
+                var response = await httpClient.GetStringAsync(resourceId);
+                resource = JsonSourceNodeFactory.Parse<ResourceJsonNode>(response);
+            }
+            catch (HttpRequestException ex)
+            {
+                return CreateErrorResponse($"Unable to retrieve resource {resourceId}: {ex.Message}", resourceId);
+            }
+        }
+
+        var result = EvaluateFhirPathTesterExpression(resourceId, resource, context, expression, terminologyServerUrl, variablesParam);
+
+        return new ContentResult
+        {
+            Content = result.SerializeToString(pretty: true),
+            ContentType = "application/fhir+json",
+            StatusCode = (int)HttpStatusCode.OK
+        };
+    }
+
+    private const string ExtensionUrlJsonValue = "http://fhir.forms-lab.com/StructureDefinition/json-value";
+
+    public static ParametersJsonNode EvaluateFhirPathTesterExpression(
+        string? resourceId,
+        ResourceJsonNode? resource,
+        string? context,
+        string? expression,
+        string? terminologyServerUrl,
+        ParameterJsonNode? pcVariables)
+    {
+        var result = new ParametersJsonNode { Id = "fhirpath" };
+
+        // Build configuration parameters
+        var configParam = new ParameterJsonNode { Name = "parameters" };
+        result.Parameter.Add(configParam);
+
+        AddPart(configParam, "evaluator", _evaluatorVersion);
+        if (!string.IsNullOrEmpty(context))
+            AddPart(configParam, "context", context);
+        if (!string.IsNullOrEmpty(expression))
+            AddPart(configParam, "expression", expression);
+        if (!string.IsNullOrEmpty(resourceId))
+            AddPart(configParam, "resource", resourceId);
+        else if (resource != null)
+            AddResourcePart(configParam, "resource", resource);
+        if (!string.IsNullOrEmpty(terminologyServerUrl))
+            AddPart(configParam, "terminologyServerUrl", terminologyServerUrl);
+
+        // Validate expression
+        if (string.IsNullOrEmpty(expression))
+        {
+            return CreateOperationOutcomeResult("error", "required", "Expression parameter is required");
+        }
+
+        // Parse the expression
+        Ignixa.FhirPath.Expressions.Expression parsedExpression;
+        try
+        {
+            parsedExpression = _fhirPathParser.Parse(expression);
+        }
+        catch (Exception ex)
+        {
+            return CreateOperationOutcomeResult("error", "invalid", $"Invalid expression: {ex.Message}", expression);
+        }
+
+        // Create evaluation context with variables
+        var evalContext = CreateEvaluationContext(pcVariables, resource);
+
+        // Convert resource to IElement for evaluation
+        IElement? inputElement = resource?.ToElement(null!);
+
+        // Determine evaluation contexts
+        var contextList = new Dictionary<string, IElement?>();
+        if (!string.IsNullOrEmpty(context) && inputElement != null)
+        {
+            try
+            {
+                var contextExpr = _fhirPathParser.Parse(context);
+                foreach (var ctxResult in _evaluator.Evaluate(inputElement, contextExpr, evalContext))
+                {
+                    contextList[ctxResult.Location] = ctxResult;
+                }
             }
             catch (Exception ex)
             {
-                outcome.Issue.Add(new OperationOutcome.IssueComponent()
-                {
-                    Severity = OperationOutcome.IssueSeverity.Error,
-                    Code = OperationOutcome.IssueType.Exception,
-                    Details = new CodeableConcept() { Text = $"Invalid expression: {ex.Message}" },
-                    Diagnostics = expression
-                });
-                return outcome;
+                return CreateOperationOutcomeResult("error", "invalid", $"Invalid context expression: {ex.Message}", context);
+            }
+        }
+        else
+        {
+            contextList[""] = inputElement;
+        }
+
+        // Execute expression for each context
+        foreach (var (contextKey, contextElement) in contextList)
+        {
+            IEnumerable<IElement> outputValues;
+            try
+            {
+                outputValues = contextElement != null
+                    ? _evaluator.Evaluate(contextElement, parsedExpression, evalContext).ToList()
+                    : [];
+            }
+            catch (Exception ex)
+            {
+                var errorParam = new ParameterJsonNode { Name = "error" };
+                errorParam.SetValue("valueString", $"Expression evaluation error: {ex.Message}");
+                result.Parameter.Add(errorParam);
+                return result;
             }
 
-            IEnumerable<ITypedElement> outputValues = null;
-            if (xps != null)
-            {
-                Dictionary<string, ITypedElement> contextList = new Dictionary<string, ITypedElement>();
+            var resultParam = new ParameterJsonNode { Name = "result" };
+            if (!string.IsNullOrEmpty(contextKey))
+                resultParam.SetValue("valueString", contextKey);
+            result.Parameter.Add(resultParam);
 
-                // before we execute the expression, if there is a property context to run from, navigate to that one fisrt
-                if (!string.IsNullOrEmpty(context))
+            foreach (var outputValue in outputValues)
+            {
+                var resultPart = new ParameterJsonNode { Name = outputValue.InstanceType ?? "(null)" };
+                resultParam.Part.Add(resultPart);
+
+                if (outputValue.Value != null)
                 {
-                    // inputNav = NavigateToContextProperty(evalContext, inputNav, context);
-                    CompiledExpression cexpr = null;
-                    try
-                    {
-                        cexpr = compiler.Compile(context);
-                        foreach (var val in cexpr(inputNav, evalContext))
-                        {
-                            contextList.Add(val.Location, val);
-                        }
-                    }
-                    catch (NullReferenceException ex)
-                    {
-                        if (inputNav == null)
-                        {
-                            outcome.Issue.Add(new OperationOutcome.IssueComponent()
-                            {
-                                Severity = OperationOutcome.IssueSeverity.Error,
-                                Code = OperationOutcome.IssueType.Value,
-                                Details = new CodeableConcept() { Text = $"Context expression requires a resource" },
-                                Diagnostics = context
-                            });
-                        }
-                        else
-                        {
-                            outcome.Issue.Add(new OperationOutcome.IssueComponent()
-                            {
-                                Severity = OperationOutcome.IssueSeverity.Error,
-                                Code = OperationOutcome.IssueType.Exception,
-                                Details = new CodeableConcept() { Text = $"Invalid context expression: {ex.Message}" },
-                                Diagnostics = context
-                            });
-                        }
-                        result.SetAnnotation<HttpStatusCode>(HttpStatusCode.BadRequest);
-                        result.Parameter.Add(new Parameters.ParameterComponent() { Name = "error", Value = new FhirString("Context expression compilation error:\r\n" + ex.Message) });
-                        return outcome;
-                    }
-                    catch (Exception ex)
-                    {
-                        outcome.Issue.Add(new OperationOutcome.IssueComponent()
-                        {
-                            Severity = OperationOutcome.IssueSeverity.Error,
-                            Code = OperationOutcome.IssueType.Exception,
-                            Details = new CodeableConcept() { Text = $"Invalid context expression: {ex.Message}" },
-                            Diagnostics = context
-                        });
-                        result.SetAnnotation<HttpStatusCode>(HttpStatusCode.BadRequest);
-                        result.Parameter.Add(new Parameters.ParameterComponent() { Name = "error", Value = new FhirString("Context expression compilation error:\r\n" + ex.Message) });
-                        return outcome;
-                    }
+                    // Primitive value - set appropriate value[x]
+                    SetTypedValue(resultPart, outputValue.InstanceType!, outputValue.Value);
                 }
                 else
                 {
-                    contextList.Add("", inputNav);
-                }
-
-                // Execute expression
-                foreach (var ctExpr in contextList)
-                {
-                    try
-                    {
-                        traceList.Clear();
-                        outputValues = xps(ctExpr.Value, evalContext).ToList();
-                    }
-                    catch (NullReferenceException ex)
-                    {
-                        if (inputNav == null)
-                        {
-                            outcome.Issue.Add(new OperationOutcome.IssueComponent()
-                            {
-                                Severity = OperationOutcome.IssueSeverity.Error,
-                                Code = OperationOutcome.IssueType.Value,
-                                Details = new CodeableConcept() { Text = $"Expression requires a resource {ctExpr.Key}" },
-                                Diagnostics = ex.Message
-                            });
-                        }
-                        else
-                        {
-                            outcome.Issue.Add(new OperationOutcome.IssueComponent()
-                            {
-                                Severity = OperationOutcome.IssueSeverity.Error,
-                                Code = OperationOutcome.IssueType.Exception,
-                                Details = new CodeableConcept() { Text = $"Expression evaluation error: {ex.Message}" },
-                                Diagnostics = context
-                            });
-                        }
-                        result.SetAnnotation<HttpStatusCode>(HttpStatusCode.BadRequest);
-                        result.Parameter.Add(new Parameters.ParameterComponent() { Name = "error", Value = new FhirString("Expression evaluation error:\r\n" + ex.Message) });
-                        return outcome;
-                    }
-                    catch (Exception ex)
-                    {
-                        outcome.Issue.Add(new OperationOutcome.IssueComponent()
-                        {
-                            Severity = OperationOutcome.IssueSeverity.Error,
-                            Code = OperationOutcome.IssueType.Exception,
-                            Details = new CodeableConcept() { Text = $"Invalid expression: {ex.Message}" },
-                            Diagnostics = context
-                        });
-                        result.SetAnnotation<HttpStatusCode>(HttpStatusCode.BadRequest);
-                        result.Parameter.Add(new Parameters.ParameterComponent() { Name = "error", Value = new FhirString("Expression evaluation error:\r\n" + ex.Message) });
-                        return outcome;
-                    }
-                    try
-                    {
-                        var partContext = new Parameters.ParameterComponent();
-                        partContext.Name = "result";
-                        if (!string.IsNullOrEmpty(ctExpr.Key))
-                            partContext.Value = new FhirString(ctExpr.Key);
-                        result.Parameter.Add(partContext);
-
-                        if (outputValues.Any())
-                        {
-                            foreach (var rawItem in outputValues)
-                            {
-                                var item = new[] { rawItem }.ToFhirValues().FirstOrDefault();
-                                var resultPart = new Parameters.ParameterComponent() { Name = item?.TypeName ?? "(null)" };
-                                partContext.Part.Add(resultPart);
-
-                                if (item is DataType dt)
-                                    resultPart.Value = dt;
-                                else if (item is Resource fr)
-                                    resultPart.Resource = fr;
-                                else if (item != null)
-                                {
-                                    resultPart.SetStringExtension(exturlJsonValue, _jsFormatter.SerializeToString(item));
-                                }
-                                else
-                                {
-                                    var sn = rawItem.Annotation<ISourceNode>();
-                                    if (sn != null)
-                                    {
-                                        resultPart.Name = "Object";
-                                        resultPart.SetStringExtension(exturlJsonValue, sn.ToJson());
-                                    }
-                                }
-                            }
-                        }
-                        // Append Trace Results
-                        if (traceList.Any())
-                        {
-                            foreach (var ti in traceList)
-                            {
-                                var traceParam = new Parameters.ParameterComponent() { Name = "trace", Value = new FhirString(ti.Key) };
-                                partContext.Part.Add(traceParam);
-
-                                foreach (var val in ti.Value.ToFhirValues())
-                                {
-                                    if (val is DataType dt)
-                                        traceParam.Part.Add(new Parameters.ParameterComponent() { Name = dt.TypeName, Value = dt });
-                                    else if (val is Resource fr)
-                                        traceParam.Part.Add(new Parameters.ParameterComponent() { Name = fr.TypeName, Resource = fr });
-                                    else
-                                    {
-                                        var jsonPart = new Parameters.ParameterComponent() { Name = val.TypeName };
-                                        traceParam.Part.Add(jsonPart);
-                                        jsonPart.SetStringExtension(exturlJsonValue, _jsFormatter.SerializeToString(val));
-                                    }
-                                }
-                            }
-                            traceList.Clear();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        result.SetAnnotation<HttpStatusCode>(HttpStatusCode.BadRequest);
-                        result.Parameter.Add(new Parameters.ParameterComponent() { Name = "error", Value = new FhirString($"Processing results error: ({ctExpr.Key})\r\n{ex.Message}") });
-                        return result;
-                    }
+                    // Complex type - serialize as JSON extension
+                    var json = SerializeElementToJson(outputValue);
+                    AddExtension(resultPart, ExtensionUrlJsonValue, json);
                 }
             }
-
-            return result;
         }
 
-        static readonly FhirJsonSerializer _jsFormatter = new FhirJsonSerializer(new SerializerSettings()
+        return result;
+    }
+
+    private static EvaluationContext CreateEvaluationContext(ParameterJsonNode? pcVariables, ResourceJsonNode? resource)
+    {
+        EvaluationContext evalContext = new FhirEvaluationContext();
+
+        // Set %resource variable if a resource is provided
+        if (resource != null)
         {
-            Pretty = true,
-            AppendNewLine = true,
-        });
-        static readonly FhirJsonParser _jsParser = new FhirJsonParser(new ParserSettings()
+            var resourceElement = resource.ToElement(null!);
+            evalContext = ((FhirEvaluationContext)evalContext).WithResource(resourceElement).WithRootResource(resourceElement);
+        }
+
+        if (pcVariables?.Part == null)
+            return evalContext;
+
+        foreach (var varParam in pcVariables.Part)
         {
-            AcceptUnknownMembers = true,
-            AllowUnrecognizedEnums = true,
-            PermissiveParsing = true
+            var varValue = varParam.GetValue();
+            if (varValue == null)
+                continue;
+
+            // Parse variable value as FHIR element by wrapping it in a temp structure
+            var wrapperJson = new JsonObject { ["resourceType"] = "Basic", ["extension"] = new JsonArray { new JsonObject { ["url"] = "value", ["value"] = varValue.DeepClone() } } };
+            var wrapper = JsonSourceNodeFactory.Parse<ResourceJsonNode>(wrapperJson.ToJsonString());
+            var wrapperElement = wrapper.ToElement(null!);
+
+            // Extract the value from the extension
+            var valueElements = wrapperElement.Children("extension")
+                .SelectMany(ext => ext.Children("value"))
+                .ToList();
+
+            if (valueElements.Count > 0)
+            {
+                evalContext = evalContext.WithEnvironmentVariable(varParam.Name, valueElements);
+            }
+        }
+
+        return evalContext;
+    }
+
+    private static void AddPart(ParameterJsonNode parent, string name, string value)
+    {
+        var part = new ParameterJsonNode { Name = name };
+        part.SetValue("valueString", value);
+        parent.Part.Add(part);
+    }
+
+    private static void AddResourcePart(ParameterJsonNode parent, string name, ResourceJsonNode resource)
+    {
+        var part = new ParameterJsonNode { Name = name };
+        part.MutableNode["resource"] = JsonNode.Parse(resource.SerializeToString());
+        parent.Part.Add(part);
+    }
+
+    private static void SetTypedValue(ParameterJsonNode param, string instanceType, object value)
+    {
+        var valueTypeName = $"value{char.ToUpperInvariant(instanceType[0])}{instanceType.Substring(1)}";
+        param.SetValue(valueTypeName, JsonValue.Create(value));
+    }
+
+    private static void AddExtension(ParameterJsonNode param, string url, string value)
+    {
+        param.MutableNode["extension"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["url"] = url,
+                ["valueString"] = value
+            }
+        };
+    }
+
+    private static string SerializeElementToJson(IElement element)
+    {
+        var obj = new JsonObject();
+        SerializeElementChildren(element, obj);
+        return obj.ToJsonString();
+    }
+
+    private static void SerializeElementChildren(IElement element, JsonObject target)
+    {
+        foreach (var child in element.Children())
+        {
+            if (child.Value != null)
+            {
+                target[child.Name] = JsonValue.Create(child.Value);
+            }
+            else
+            {
+                var childObj = new JsonObject();
+                SerializeElementChildren(child, childObj);
+                target[child.Name] = childObj;
+            }
+        }
+    }
+
+    private static ParametersJsonNode CreateOperationOutcomeResult(string severity, string code, string message, string? diagnostics = null)
+    {
+        var outcome = new OperationOutcomeJsonNode();
+        var issue = new OperationOutcomeJsonNode.IssueComponent
+        {
+            Severity = severity switch
+            {
+                "error" => OperationOutcomeJsonNode.IssueSeverity.Error,
+                "warning" => OperationOutcomeJsonNode.IssueSeverity.Warning,
+                "information" => OperationOutcomeJsonNode.IssueSeverity.Information,
+                _ => OperationOutcomeJsonNode.IssueSeverity.Error
+            },
+            Code = code switch
+            {
+                "required" => OperationOutcomeJsonNode.IssueType.Required,
+                "invalid" => OperationOutcomeJsonNode.IssueType.Invalid,
+                "not-found" => OperationOutcomeJsonNode.IssueType.NotFound,
+                _ => OperationOutcomeJsonNode.IssueType.Exception
+            },
+            Details = new CodeableConceptJsonNode { Text = message },
+            Diagnostics = diagnostics!
+        };
+        outcome.Issue.Add(issue);
+
+        // Return as Parameters wrapping the OperationOutcome for consistent API
+        var result = new ParametersJsonNode { Id = "fhirpath" };
+        var errorParam = new ParameterJsonNode { Name = "outcome" };
+        errorParam.MutableNode["resource"] = JsonNode.Parse(outcome.SerializeToString());
+        result.Parameter.Add(errorParam);
+        return result;
+    }
+
+    private static IActionResult CreateErrorResponse(string message, string? diagnostics = null)
+    {
+        var outcome = new OperationOutcomeJsonNode();
+        outcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+        {
+            Severity = OperationOutcomeJsonNode.IssueSeverity.Error,
+            Code = OperationOutcomeJsonNode.IssueType.NotFound,
+            Details = new CodeableConceptJsonNode { Text = message },
+            Diagnostics = diagnostics!
         });
 
-        // To keep the Azure function "warm" trigger it every 15 minutes
-        // https://mikhail.io/serverless/coldstarts/azure/
-        [FunctionName("Warmer")]
-        public static void WarmUp([TimerTrigger("0 */15 * * * *")] TimerInfo timer)
+        return new ContentResult
         {
-            // Do nothing
-        }
+            Content = outcome.SerializeToString(pretty: true),
+            ContentType = "application/fhir+json",
+            StatusCode = (int)HttpStatusCode.BadRequest
+        };
+    }
+
+    [Function("Warmer")]
+    public void WarmUp([TimerTrigger("0 */15 * * * *")] TimerInfo timer)
+    {
+        _logger.LogInformation("Warmer function executed at: {time}", DateTime.Now);
     }
 }
