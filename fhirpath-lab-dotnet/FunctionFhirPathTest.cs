@@ -12,6 +12,7 @@ using Ignixa.FhirPath.Parser;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
+using Ignixa.Specification.Generated;
 
 namespace FhirPathLab_DotNetEngine;
 
@@ -22,6 +23,7 @@ public class FunctionFhirPathTest
     private static readonly FhirPathEvaluator _evaluator = new();
     private static readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
     private static readonly string _evaluatorVersion = GetEvaluatorVersion();
+    private static readonly ISchema _r4Schema = new R4CoreSchemaProvider();
 
     public FunctionFhirPathTest(ILogger<FunctionFhirPathTest> logger)
     {
@@ -188,7 +190,7 @@ public class FunctionFhirPathTest
         var evalContext = CreateEvaluationContext(pcVariables, resource);
 
         // Convert resource to IElement for evaluation
-        IElement? inputElement = resource?.ToElement(null!);
+        IElement? inputElement = resource?.ToElement(_r4Schema);
 
         // Determine evaluation contexts
         var contextList = new Dictionary<string, IElement?>();
@@ -264,7 +266,7 @@ public class FunctionFhirPathTest
         // Set %resource variable if a resource is provided
         if (resource != null)
         {
-            var resourceElement = resource.ToElement(null!);
+            var resourceElement = resource.ToElement(_r4Schema);
             evalContext = ((FhirEvaluationContext)evalContext).WithResource(resourceElement).WithRootResource(resourceElement);
         }
 
@@ -280,7 +282,7 @@ public class FunctionFhirPathTest
             // Parse variable value as FHIR element by wrapping it in a temp structure
             var wrapperJson = new JsonObject { ["resourceType"] = "Basic", ["extension"] = new JsonArray { new JsonObject { ["url"] = "value", ["value"] = varValue.DeepClone() } } };
             var wrapper = JsonSourceNodeFactory.Parse<ResourceJsonNode>(wrapperJson.ToJsonString());
-            var wrapperElement = wrapper.ToElement(null!);
+            var wrapperElement = wrapper.ToElement(_r4Schema);
 
             // Extract the value from the extension
             var valueElements = wrapperElement.Children("extension")
