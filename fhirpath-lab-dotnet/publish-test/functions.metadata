@@ -1,0 +1,75 @@
+[
+  {
+    "name": "FHIRPathTester-CapabilityStatement",
+    "scriptFile": "FhirPathLab-DotNetEngine.dll",
+    "entryPoint": "FhirPathLab_DotNetEngine.FunctionFhirPathTest.RunCapabilityStatement",
+    "language": "dotnet-isolated",
+    "properties": {
+      "IsCodeless": false
+    },
+    "bindings": [
+      {
+        "name": "req",
+        "direction": "In",
+        "type": "httpTrigger",
+        "authLevel": "Anonymous",
+        "methods": [
+          "get"
+        ],
+        "route": "metadata",
+        "properties": {}
+      },
+      {
+        "name": "$return",
+        "type": "http",
+        "direction": "Out"
+      }
+    ]
+  },
+  {
+    "name": "FHIRPathTester",
+    "scriptFile": "FhirPathLab-DotNetEngine.dll",
+    "entryPoint": "FhirPathLab_DotNetEngine.FunctionFhirPathTest.RunFhirPathTest",
+    "language": "dotnet-isolated",
+    "properties": {
+      "IsCodeless": false
+    },
+    "bindings": [
+      {
+        "name": "req",
+        "direction": "In",
+        "type": "httpTrigger",
+        "authLevel": "Anonymous",
+        "methods": [
+          "get",
+          "post"
+        ],
+        "route": "$fhirpath",
+        "properties": {}
+      },
+      {
+        "name": "$return",
+        "type": "http",
+        "direction": "Out"
+      }
+    ]
+  },
+  {
+    "name": "Warmer",
+    "scriptFile": "FhirPathLab-DotNetEngine.dll",
+    "entryPoint": "FhirPathLab_DotNetEngine.FunctionFhirPathTest.WarmUp",
+    "language": "dotnet-isolated",
+    "properties": {
+      "IsCodeless": false
+    },
+    "bindings": [
+      {
+        "name": "timer",
+        "direction": "In",
+        "type": "timerTrigger",
+        "schedule": "0 */15 * * * *",
+        "properties": {}
+      }
+    ]
+  }
+]
