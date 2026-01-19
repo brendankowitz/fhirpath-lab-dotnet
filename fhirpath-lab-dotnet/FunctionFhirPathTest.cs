@@ -301,8 +301,7 @@ public class FunctionFhirPathTest
                 }
                 
                 // Analyze the expression to get inferred types for AST
-                // Use populateInferredTypes=true to populate InferredType on each expression node
-                analysisResult = analyzer.Analyze(parsedExpression, validationTypeName, populateInferredTypes: true);
+                analysisResult = analyzer.Analyze(parsedExpression, validationTypeName);
                 
                 var validationIssues = analysisResult.Issues.ToList();
                 if (validationIssues.Count > 0)
