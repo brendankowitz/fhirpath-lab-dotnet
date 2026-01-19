@@ -263,13 +263,10 @@ public class FunctionFhirPathTest
             return CreateOperationOutcomeResult("error", "invalid", $"Invalid expression: {ex.Message}", expression);
         }
 
-        // Add AST output inside the parameters part
-        var astPart = new ParameterJsonNode { Name = "parseDebugTree" };
-        astPart.SetValue("valueString", ExpressionToJsonAst(parsedExpression));
-        configParam.Part.Add(astPart);
-
         // Validate expression against schema if we have a resource type
         string? rootTypeName = resource?.ResourceType;
+        AnalysisResult? analysisResult = null;
+        
         if (!string.IsNullOrEmpty(rootTypeName))
         {
             try
@@ -301,7 +298,10 @@ public class FunctionFhirPathTest
                     }
                 }
                 
-                var validationIssues = analyzer.Validate(parsedExpression, validationTypeName).ToList();
+                // Analyze the expression to get inferred types for AST
+                analysisResult = analyzer.Analyze(parsedExpression, validationTypeName);
+                
+                var validationIssues = analysisResult.Issues.ToList();
                 if (validationIssues.Count > 0)
                 {
                     // Create an OperationOutcome resource for validation issues
@@ -340,6 +340,11 @@ public class FunctionFhirPathTest
                 result.Parameter.Add(warnParam);
             }
         }
+
+        // Add AST output inside the parameters part (after analysis for return type info)
+        var astPart = new ParameterJsonNode { Name = "parseDebugTree" };
+        astPart.SetValue("valueString", ExpressionToJsonAst(parsedExpression, analysisResult));
+        configParam.Part.Add(astPart);
 
         // Create evaluation context with variables and trace handler
         var evalContext = CreateEvaluationContext(pcVariables, resource, schema, debugTrace ? traceOutput : null);
@@ -718,9 +723,25 @@ public class FunctionFhirPathTest
     /// <summary>
     /// Converts a parsed FHIRPath expression to a JSON AST representation matching the UI's JsonNode interface
     /// </summary>
-    private static string ExpressionToJsonAst(Expression expr)
+    private static string ExpressionToJsonAst(Expression expr, AnalysisResult? analysisResult = null)
     {
         var node = ExpressionToJsonNode(expr);
+        
+        // Add inferred return type from analysis if available
+        if (analysisResult?.InferredTypes?.Types.Count > 0)
+        {
+            var types = analysisResult.InferredTypes.Types
+                .Select(t => t.TypeName)
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Distinct()
+                .ToList();
+            
+            if (types.Count == 1)
+                node.ReturnType = types[0];
+            else if (types.Count > 1)
+                node.ReturnType = string.Join(" | ", types);
+        }
+        
         return JsonSerializer.Serialize(node, _jsonOptions);
     }
 
