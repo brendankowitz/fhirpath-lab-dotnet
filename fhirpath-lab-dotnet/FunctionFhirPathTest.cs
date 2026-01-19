@@ -17,6 +17,7 @@ using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification.Generated;
+using Ignixa.Specification.Extensions;
 using FhirPathLab_DotNetEngine.Serialization;
 
 namespace FhirPathLab_DotNetEngine;
@@ -37,11 +38,11 @@ public class FunctionFhirPathTest
     private static readonly string _evaluatorVersion = GetEvaluatorVersion();
     
     // Lazy-initialized schema providers for all FHIR versions
-    private static readonly Lazy<IFhirSchemaProvider> _stu3Schema = new(() => new STU3CoreSchemaProvider());
-    private static readonly Lazy<IFhirSchemaProvider> _r4Schema = new(() => new R4CoreSchemaProvider());
-    private static readonly Lazy<IFhirSchemaProvider> _r4bSchema = new(() => new R4BCoreSchemaProvider());
-    private static readonly Lazy<IFhirSchemaProvider> _r5Schema = new(() => new R5CoreSchemaProvider());
-    private static readonly Lazy<IFhirSchemaProvider> _r6Schema = new(() => new R6CoreSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _stu3Schema = new(() => FhirVersion.Stu3.GetSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _r4Schema = new(() => FhirVersion.R4.GetSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _r4bSchema = new(() => FhirVersion.R4B.GetSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _r5Schema = new(() => FhirVersion.R5.GetSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _r6Schema = new(() => FhirVersion.R6.GetSchemaProvider());
 
     public FunctionFhirPathTest(ILogger<FunctionFhirPathTest> logger)
     {
