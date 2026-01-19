@@ -52,9 +52,19 @@ public class FunctionFhirPathTest
     private static string GetEvaluatorVersion()
     {
         var assembly = typeof(FhirPathEvaluator).Assembly;
-        var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        var fullVersion = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? assembly.GetName().Version?.ToString()
             ?? "unknown";
+
+        // Extract just the base version (e.g., "0.0.149" from "0.0.149-dev-fhirpath-lab.7+Branch...")
+        var version = fullVersion;
+        var dashIndex = fullVersion.IndexOf('-');
+        var plusIndex = fullVersion.IndexOf('+');
+        if (dashIndex > 0)
+            version = fullVersion.Substring(0, dashIndex);
+        else if (plusIndex > 0)
+            version = fullVersion.Substring(0, plusIndex);
+
         return $"Ignixa-{version}";
     }
 
@@ -268,16 +278,17 @@ public class FunctionFhirPathTest
         // Validate expression against schema if we have a resource type
         string? rootTypeName = resource?.ResourceType;
         AnalysisResult? analysisResult = null;
-        
+        // validationTypeName is the type the expression is analyzed against - used for AST expression scope
+        string? validationTypeName = rootTypeName;
+
         if (!string.IsNullOrEmpty(rootTypeName))
         {
             try
             {
                 var analyzer = GetAnalyzerForVersion(fhirVersion);
-                
-                // Determine the validation root type - if context is specified, 
+
+                // Determine the validation root type - if context is specified,
                 // analyze the context expression to find the resulting type
-                string validationTypeName = rootTypeName;
                 if (!string.IsNullOrEmpty(context))
                 {
                     try
@@ -345,14 +356,16 @@ public class FunctionFhirPathTest
 
         // Add AST output inside the parameters part (after analysis for return type info)
         var astPart = new ParameterJsonNode { Name = "parseDebugTree" };
-        astPart.SetValue("valueString", ExpressionToJsonAst(parsedExpression, analysisResult));
+        astPart.SetValue("valueString", ExpressionToJsonAst(parsedExpression, analysisResult, validationTypeName));
         configParam.Part.Add(astPart);
 
-        // Create evaluation context with variables and trace handler
-        var evalContext = CreateEvaluationContext(pcVariables, resource, schema, debugTrace ? traceOutput : null);
 
         // Convert resource to IElement for evaluation
         IElement? inputElement = resource?.ToElement(schema);
+
+        // Create temporary evaluation context for context expression (ignore traces or capture globally if needed)
+        // We use a discard list for context evaluation traces as they are not attached to a specific result result
+        var contextEvalContext = CreateEvaluationContext(pcVariables, resource, schema, new List<Ignixa.FhirPath.Evaluation.TraceEntry>());
 
         // Determine evaluation contexts
         var contextList = new Dictionary<string, IElement?>();
@@ -361,7 +374,7 @@ public class FunctionFhirPathTest
             try
             {
                 var contextExpr = _fhirPathParser.Parse(context);
-                foreach (var ctxResult in _evaluator.Evaluate(inputElement, contextExpr, evalContext))
+                foreach (var ctxResult in _evaluator.Evaluate(inputElement, contextExpr, contextEvalContext))
                 {
                     contextList[ctxResult.Location] = ctxResult;
                 }
@@ -379,6 +392,10 @@ public class FunctionFhirPathTest
         // Execute expression for each context
         foreach (var (contextKey, contextElement) in contextList)
         {
+            // Always capture trace output so the trace tab works in the UI
+            var localTraceOutput = new List<Ignixa.FhirPath.Evaluation.TraceEntry>();
+            var evalContext = CreateEvaluationContext(pcVariables, resource, schema, localTraceOutput);
+
             IEnumerable<IElement> outputValues;
             try
             {
@@ -415,49 +432,40 @@ public class FunctionFhirPathTest
                     AddExtension(resultPart, ExtensionUrlJsonValue, json);
                 }
             }
-        }
-
-        // Add trace output if enabled
-        if (debugTrace && traceOutput.Count > 0)
-        {
-            foreach (var trace in traceOutput)
+            
+            // Add trace output (always included so the trace tab works in the UI)
+            if (localTraceOutput.Count > 0)
             {
-                var traceParam = new ParameterJsonNode { Name = "trace" };
-                traceParam.SetValue("valueString", trace.Name);
-                result.Parameter.Add(traceParam);
-
-                // Add trace items for each focus element
-                foreach (var element in trace.Focus)
+                foreach (var trace in localTraceOutput)
                 {
-                    var elementPart = new ParameterJsonNode { Name = element.InstanceType ?? string.Empty };
-                    traceParam.Part.Add(elementPart);
+                    var traceParam = new ParameterJsonNode { Name = "trace" };
+                    traceParam.SetValue("valueString", trace.Name);
+                    resultParam.Part.Add(traceParam);
 
-                    if (element.Value != null)
+                    // Add trace items for each focus element
+                    foreach (var element in trace.Focus)
                     {
-                        SetTypedValue(elementPart, element.InstanceType!, element.Value);
-                    }
-                    else
-                    {
-                        // Complex type - serialize as JSON extension
-                        var json = SerializeElementToJson(element);
-                        AddExtension(elementPart, ExtensionUrlJsonValue, json);
-                    }
+                        var elementPart = new ParameterJsonNode { Name = element.InstanceType ?? string.Empty };
+                        traceParam.Part.Add(elementPart);
 
-                    // Add resource-path extension if available
-                    if (!string.IsNullOrEmpty(element.Location))
-                    {
-                        var extensionArray = elementPart.MutableNode["extension"]?.AsArray() ?? new JsonArray();
-                        extensionArray.Add(new JsonObject
+                        if (element.Value != null)
                         {
-                            ["url"] = "http://fhir.forms-lab.com/StructureDefinition/resource-path",
-                            ["valueString"] = element.Location
-                        });
-                        elementPart.MutableNode["extension"] = extensionArray;
+                            // Primitive value - set appropriate value[x]
+                            SetTypedValue(elementPart, element.InstanceType!, element.Value);
+                        }
+                        else
+                        {
+                            // Complex type - serialize as typed FHIR value (e.g., valueHumanName)
+                            // This matches the format expected by the UI and used by Firely
+                            var json = SerializeElementToJson(element);
+                            var valuePropertyName = $"value{element.InstanceType}";
+                            elementPart.MutableNode[valuePropertyName] = JsonNode.Parse(json);
+                        }
                     }
                 }
             }
         }
-
+        
         return result;
     }
 
@@ -757,9 +765,9 @@ public class FunctionFhirPathTest
     /// <summary>
     /// Converts a parsed FHIRPath expression to a JSON AST representation matching the UI's JsonNode interface
     /// </summary>
-    private static string ExpressionToJsonAst(Expression expr, AnalysisResult? analysisResult = null)
+    private static string ExpressionToJsonAst(Expression expr, AnalysisResult? analysisResult = null, string? rootTypeName = null)
     {
-        var visitor = new JsonAstVisitor();
+        var visitor = new JsonAstVisitor { RootTypeName = rootTypeName };
         var node = expr.AcceptVisitor(visitor, analysisResult);
         
         // Add inferred return type from analysis if available (for the root node)
