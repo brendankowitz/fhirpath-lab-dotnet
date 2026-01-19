@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Ignixa.Abstractions;
+using Ignixa.FhirPath.Analysis;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.FhirPath.Expressions;
 using Ignixa.FhirPath.Parser;
@@ -23,15 +24,22 @@ public class FunctionFhirPathTest
     private readonly ILogger<FunctionFhirPathTest> _logger;
     private static readonly FhirPathParser _fhirPathParser = new();
     private static readonly FhirPathEvaluator _evaluator = new();
+    
+    // Lazy-initialized analyzers for each FHIR version
+    private static readonly Lazy<FhirPathAnalyzer> _stu3Analyzer = new(() => new FhirPathAnalyzer(_stu3Schema.Value));
+    private static readonly Lazy<FhirPathAnalyzer> _r4Analyzer = new(() => new FhirPathAnalyzer(_r4Schema.Value));
+    private static readonly Lazy<FhirPathAnalyzer> _r4bAnalyzer = new(() => new FhirPathAnalyzer(_r4bSchema.Value));
+    private static readonly Lazy<FhirPathAnalyzer> _r5Analyzer = new(() => new FhirPathAnalyzer(_r5Schema.Value));
+    private static readonly Lazy<FhirPathAnalyzer> _r6Analyzer = new(() => new FhirPathAnalyzer(_r6Schema.Value));
     private static readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
     private static readonly string _evaluatorVersion = GetEvaluatorVersion();
     
     // Lazy-initialized schema providers for all FHIR versions
-    private static readonly Lazy<ISchema> _stu3Schema = new(() => new STU3CoreSchemaProvider());
-    private static readonly Lazy<ISchema> _r4Schema = new(() => new R4CoreSchemaProvider());
-    private static readonly Lazy<ISchema> _r4bSchema = new(() => new R4BCoreSchemaProvider());
-    private static readonly Lazy<ISchema> _r5Schema = new(() => new R5CoreSchemaProvider());
-    private static readonly Lazy<ISchema> _r6Schema = new(() => new R6CoreSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _stu3Schema = new(() => new STU3CoreSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _r4Schema = new(() => new R4CoreSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _r4bSchema = new(() => new R4BCoreSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _r5Schema = new(() => new R5CoreSchemaProvider());
+    private static readonly Lazy<IFhirSchemaProvider> _r6Schema = new(() => new R6CoreSchemaProvider());
 
     public FunctionFhirPathTest(ILogger<FunctionFhirPathTest> logger)
     {
@@ -55,6 +63,16 @@ public class FunctionFhirPathTest
         "R5" => _r5Schema.Value,
         "R6" => _r6Schema.Value,
         _ => _r4Schema.Value
+    };
+
+    private static FhirPathAnalyzer GetAnalyzerForVersion(string fhirVersion) => fhirVersion.ToUpperInvariant() switch
+    {
+        "STU3" or "R3" => _stu3Analyzer.Value,
+        "R4" => _r4Analyzer.Value,
+        "R4B" => _r4bAnalyzer.Value,
+        "R5" => _r5Analyzer.Value,
+        "R6" => _r6Analyzer.Value,
+        _ => _r4Analyzer.Value
     };
 
     [Function("FHIRPathTester-CapabilityStatement")]
@@ -248,6 +266,43 @@ public class FunctionFhirPathTest
         var astParam = new ParameterJsonNode { Name = "parseDebugTree" };
         astParam.SetValue("valueString", ExpressionToAst(parsedExpression));
         result.Parameter.Add(astParam);
+
+        // Validate expression against schema if we have a resource type
+        string? rootTypeName = resource?.ResourceType;
+        if (!string.IsNullOrEmpty(rootTypeName))
+        {
+            try
+            {
+                var analyzer = GetAnalyzerForVersion(fhirVersion);
+                var validationIssues = analyzer.Validate(parsedExpression, rootTypeName).ToList();
+                if (validationIssues.Count > 0)
+                {
+                    foreach (var issue in validationIssues)
+                    {
+                        var issueParam = new ParameterJsonNode { Name = issue.Severity.ToString().ToLowerInvariant() };
+                        var issuePart = new ParameterJsonNode { Name = "validation" };
+                        issuePart.SetValue("valueString", issue.Message);
+                        issueParam.Part.Add(issuePart);
+                        
+                        if (!string.IsNullOrEmpty(issue.Location))
+                        {
+                            var locPart = new ParameterJsonNode { Name = "location" };
+                            locPart.SetValue("valueString", issue.Location);
+                            issueParam.Part.Add(locPart);
+                        }
+                        
+                        result.Parameter.Add(issueParam);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // If validation fails, log but continue with evaluation
+                var warnParam = new ParameterJsonNode { Name = "warning" };
+                warnParam.SetValue("valueString", $"Validation skipped: {ex.Message}");
+                result.Parameter.Add(warnParam);
+            }
+        }
 
         // Create evaluation context with variables and trace handler
         var evalContext = CreateEvaluationContext(pcVariables, resource, schema, debugTrace ? traceOutput : null);
