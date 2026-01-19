@@ -17,6 +17,7 @@ using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification.Generated;
+using FhirPathLab_DotNetEngine.Serialization;
 
 namespace FhirPathLab_DotNetEngine;
 
@@ -758,9 +759,11 @@ public class FunctionFhirPathTest
     /// </summary>
     private static string ExpressionToJsonAst(Expression expr, AnalysisResult? analysisResult = null)
     {
-        var node = ExpressionToJsonNode(expr);
+        var visitor = new JsonAstVisitor();
+        var node = expr.AcceptVisitor(visitor, analysisResult);
         
-        // Add inferred return type from analysis if available
+        // Add inferred return type from analysis if available (for the root node)
+        // Note: The visitor also populates types from expression.InferredType, but this handles the root result
         if (analysisResult?.InferredTypes?.Types.Count > 0)
         {
             var types = analysisResult.InferredTypes.Types
@@ -769,139 +772,16 @@ public class FunctionFhirPathTest
                 .Distinct()
                 .ToList();
             
+            string returnType;
             if (types.Count == 1)
-                node.ReturnType = types[0];
-            else if (types.Count > 1)
-                node.ReturnType = string.Join(" | ", types);
+                returnType = types[0];
+            else
+                returnType = string.Join(" | ", types);
+                
+            node["ReturnType"] = returnType;
         }
         
-        return JsonSerializer.Serialize(node, _jsonOptions);
-    }
-
-    private static JsonAstNode ExpressionToJsonNode(Expression expr)
-    {
-        var node = new JsonAstNode();
-        
-        switch (expr)
-        {
-            case ConstantExpression ce:
-                node.ExpressionType = "Constant";
-                node.Name = ce.Value?.ToString() ?? "null";
-                node.ReturnType = ce.Value?.GetType().Name;
-                break;
-                
-            case VariableRefExpression vre:
-                node.ExpressionType = "Variable";
-                node.Name = $"%{vre.Name}";
-                break;
-                
-            case IdentifierExpression ide:
-                node.ExpressionType = "Identifier";
-                node.Name = ide.Name;
-                break;
-                
-            case ScopeExpression se:
-                node.ExpressionType = "Scope";
-                node.Name = $"${se.ScopeName}";
-                break;
-                
-            case QuantityExpression qe:
-                node.ExpressionType = "Quantity";
-                node.Name = $"{qe.Value} '{qe.Unit}'";
-                break;
-                
-            case EmptyExpression:
-                node.ExpressionType = "Empty";
-                node.Name = "{}";
-                break;
-                
-            case ChildExpression che:
-                node.ExpressionType = "Child";
-                node.Name = $".{che.ChildName}";
-                if (che.Focus != null)
-                    node.Arguments = [ExpressionToJsonNode(che.Focus)];
-                break;
-                
-            case PropertyAccessExpression pae:
-                node.ExpressionType = "PropertyAccess";
-                node.Name = $".{pae.PropertyName}";
-                if (pae.Focus != null)
-                    node.Arguments = [ExpressionToJsonNode(pae.Focus)];
-                break;
-                
-            case IndexerExpression ie:
-                node.ExpressionType = "Indexer";
-                node.Name = "[]";
-                node.Arguments = [ExpressionToJsonNode(ie.Collection), ExpressionToJsonNode(ie.Index)];
-                break;
-                
-            case UnaryExpression ue:
-                node.ExpressionType = "Unary";
-                node.Name = ue.Operator.ToString();
-                node.Arguments = [ExpressionToJsonNode(ue.Operand)];
-                break;
-                
-            case BinaryExpression be:
-                node.ExpressionType = "Binary";
-                node.Name = be.Operator.ToString();
-                node.Arguments = [ExpressionToJsonNode(be.Left), ExpressionToJsonNode(be.Right)];
-                break;
-                
-            case ParenthesizedExpression pe:
-                node.ExpressionType = "Parenthesized";
-                node.Name = "()";
-                node.Arguments = [ExpressionToJsonNode(pe.InnerExpression)];
-                break;
-                
-            case FunctionCallExpression fce:
-                node.ExpressionType = "FunctionCall";
-                node.Name = fce.FunctionName;
-                var args = new List<JsonAstNode>();
-                if (fce.Focus != null)
-                    args.Add(ExpressionToJsonNode(fce.Focus));
-                foreach (var arg in fce.Arguments)
-                    args.Add(ExpressionToJsonNode(arg));
-                if (args.Count > 0)
-                    node.Arguments = args.ToArray();
-                break;
-                
-            default:
-                node.ExpressionType = expr.GetType().Name;
-                node.Name = expr.ToString() ?? "";
-                break;
-        }
-        
-        // Add position information if available
-        if (expr.Location != null)
-        {
-            node.Position = expr.Location.RawPosition;
-            node.Length = expr.Location.Length;
-            node.Line = expr.Location.LineNumber;
-            node.Column = expr.Location.LinePosition;
-        }
-        
-        // Add inferred type from analysis if populated on the expression
-        if (!string.IsNullOrEmpty(expr.InferredType))
-        {
-            node.ReturnType = expr.InferredType;
-        }
-        
-        return node;
-    }
-
-    /// <summary>
-    /// JSON AST node matching the UI's JsonNode interface
-    /// </summary>
-    private class JsonAstNode
-    {
-        public string ExpressionType { get; set; } = "";
-        public string Name { get; set; } = "";
-        public JsonAstNode[]? Arguments { get; set; }
-        public string? ReturnType { get; set; }
-        public int? Position { get; set; }
-        public int? Length { get; set; }
-        public int? Line { get; set; }
-        public int? Column { get; set; }
+        return node.ToJsonString(_jsonOptions);
     }
 
     [Function("Warmer")]
