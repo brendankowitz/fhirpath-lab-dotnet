@@ -228,7 +228,7 @@ public class FunctionFhirPathTest
         string fhirVersion)
     {
         var result = new ParametersJsonNode { Id = "fhirpath" };
-        var traceOutput = new List<TraceEntry>();
+        var traceOutput = new List<Ignixa.FhirPath.Evaluation.TraceEntry>();
 
         // Build configuration parameters
         var configParam = new ParameterJsonNode { Name = "parameters" };
@@ -299,7 +299,8 @@ public class FunctionFhirPathTest
                 }
                 
                 // Analyze the expression to get inferred types for AST
-                analysisResult = analyzer.Analyze(parsedExpression, validationTypeName);
+                // Use populateInferredTypes=true to populate InferredType on each expression node
+                analysisResult = analyzer.Analyze(parsedExpression, validationTypeName, populateInferredTypes: true);
                 
                 var validationIssues = analysisResult.Issues.ToList();
                 if (validationIssues.Count > 0)
@@ -418,28 +419,60 @@ public class FunctionFhirPathTest
         // Add trace output if enabled
         if (debugTrace && traceOutput.Count > 0)
         {
-            var traceParam = new ParameterJsonNode { Name = "trace" };
-            result.Parameter.Add(traceParam);
             foreach (var trace in traceOutput)
             {
-                var tracePart = new ParameterJsonNode { Name = trace.Name };
-                tracePart.SetValue("valueString", trace.Value);
-                traceParam.Part.Add(tracePart);
+                var traceParam = new ParameterJsonNode { Name = "trace" };
+                traceParam.SetValue("valueString", trace.Name);
+                result.Parameter.Add(traceParam);
+
+                // Add trace items for each focus element
+                foreach (var element in trace.Focus)
+                {
+                    var elementPart = new ParameterJsonNode { Name = element.InstanceType ?? string.Empty };
+                    traceParam.Part.Add(elementPart);
+
+                    if (element.Value != null)
+                    {
+                        SetTypedValue(elementPart, element.InstanceType!, element.Value);
+                    }
+                    else
+                    {
+                        // Complex type - serialize as JSON extension
+                        var json = SerializeElementToJson(element);
+                        AddExtension(elementPart, ExtensionUrlJsonValue, json);
+                    }
+
+                    // Add resource-path extension if available
+                    if (!string.IsNullOrEmpty(element.Location))
+                    {
+                        var extensionArray = elementPart.MutableNode["extension"]?.AsArray() ?? new JsonArray();
+                        extensionArray.Add(new JsonObject
+                        {
+                            ["url"] = "http://fhir.forms-lab.com/StructureDefinition/resource-path",
+                            ["valueString"] = element.Location
+                        });
+                        elementPart.MutableNode["extension"] = extensionArray;
+                    }
+                }
             }
         }
 
         return result;
     }
 
-    private record TraceEntry(string Name, string Value);
-
     private static EvaluationContext CreateEvaluationContext(
         ParameterJsonNode? pcVariables, 
         ResourceJsonNode? resource, 
         ISchema schema,
-        List<TraceEntry>? traceOutput)
+        List<Ignixa.FhirPath.Evaluation.TraceEntry>? traceOutput)
     {
         EvaluationContext evalContext = new FhirEvaluationContext();
+
+        // Set up trace handler if trace output collection is provided
+        if (traceOutput != null)
+        {
+            evalContext = evalContext.WithTraceHandler(entry => traceOutput.Add(entry));
+        }
 
         // Set %resource variable if a resource is provided
         if (resource != null)
@@ -845,6 +878,12 @@ public class FunctionFhirPathTest
             node.Length = expr.Location.Length;
             node.Line = expr.Location.LineNumber;
             node.Column = expr.Location.LinePosition;
+        }
+        
+        // Add inferred type from analysis if populated on the expression
+        if (!string.IsNullOrEmpty(expr.InferredType))
+        {
+            node.ReturnType = expr.InferredType;
         }
         
         return node;

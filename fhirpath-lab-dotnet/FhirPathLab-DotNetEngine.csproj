@@ -15,9 +15,12 @@
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Timer" Version="4.3.1" />
     <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="2.22.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="2.0.0" />
-    <PackageReference Include="Ignixa.FhirPath" Version="0.0.148" />
-    <PackageReference Include="Ignixa.Serialization" Version="0.0.148" />
-    <PackageReference Include="Ignixa.Specification" Version="0.0.148" />
+  </ItemGroup>
+  <!-- Local project references for development -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\fhir-server-contrib\src\Core\Ignixa.FhirPath\Ignixa.FhirPath.csproj" />
+    <ProjectReference Include="..\..\fhir-server-contrib\src\Core\Ignixa.Serialization\Ignixa.Serialization.csproj" />
+    <ProjectReference Include="..\..\fhir-server-contrib\src\Core\Ignixa.Specification\Ignixa.Specification.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
