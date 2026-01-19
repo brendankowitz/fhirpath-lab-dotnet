@@ -1,5 +1,6 @@
 using System.Net;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
@@ -8,6 +9,7 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Evaluation;
+using Ignixa.FhirPath.Expressions;
 using Ignixa.FhirPath.Parser;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
@@ -23,7 +25,13 @@ public class FunctionFhirPathTest
     private static readonly FhirPathEvaluator _evaluator = new();
     private static readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
     private static readonly string _evaluatorVersion = GetEvaluatorVersion();
-    private static readonly ISchema _r4Schema = new R4CoreSchemaProvider();
+    
+    // Lazy-initialized schema providers for all FHIR versions
+    private static readonly Lazy<ISchema> _stu3Schema = new(() => new STU3CoreSchemaProvider());
+    private static readonly Lazy<ISchema> _r4Schema = new(() => new R4CoreSchemaProvider());
+    private static readonly Lazy<ISchema> _r4bSchema = new(() => new R4BCoreSchemaProvider());
+    private static readonly Lazy<ISchema> _r5Schema = new(() => new R5CoreSchemaProvider());
+    private static readonly Lazy<ISchema> _r6Schema = new(() => new R6CoreSchemaProvider());
 
     public FunctionFhirPathTest(ILogger<FunctionFhirPathTest> logger)
     {
@@ -39,6 +47,16 @@ public class FunctionFhirPathTest
         return $"Ignixa-{version}";
     }
 
+    private static ISchema GetSchemaForVersion(string fhirVersion) => fhirVersion.ToUpperInvariant() switch
+    {
+        "STU3" or "R3" => _stu3Schema.Value,
+        "R4" => _r4Schema.Value,
+        "R4B" => _r4bSchema.Value,
+        "R5" => _r5Schema.Value,
+        "R6" => _r6Schema.Value,
+        _ => _r4Schema.Value
+    };
+
     [Function("FHIRPathTester-CapabilityStatement")]
     public IActionResult RunCapabilityStatement(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "metadata")] HttpRequest req)
@@ -49,11 +67,13 @@ public class FunctionFhirPathTest
         {
             ["resourceType"] = "CapabilityStatement",
             ["title"] = "FHIRPath Lab DotNet expression evaluator (Ignixa)",
+            ["description"] = "Supports FHIR STU3, R4, R4B, R5, R6. Features: AST output, trace, validation.",
             ["status"] = "active",
-            ["date"] = "2026-01-15",
+            ["date"] = "2026-01-19",
             ["kind"] = "instance",
             ["fhirVersion"] = "4.0.1",
             ["format"] = new JsonArray { "application/fhir+json" },
+            ["implementationGuide"] = new JsonArray { "STU3", "R4", "R4B", "R5", "R6" },
             ["rest"] = new JsonArray
             {
                 new JsonObject
@@ -84,12 +104,44 @@ public class FunctionFhirPathTest
     public async Task<IActionResult> RunFhirPathTest(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath")] HttpRequest req)
     {
-        _logger.LogInformation("FhirPath Expression dotnet Evaluation (Ignixa)");
+        return await ProcessFhirPathRequest(req, "R4");
+    }
+
+    [Function("FHIRPathTester-STU3")]
+    public async Task<IActionResult> RunFhirPathTestStu3(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath-stu3")] HttpRequest req)
+    {
+        return await ProcessFhirPathRequest(req, "STU3");
+    }
+
+    [Function("FHIRPathTester-R4B")]
+    public async Task<IActionResult> RunFhirPathTestR4B(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath-r4b")] HttpRequest req)
+    {
+        return await ProcessFhirPathRequest(req, "R4B");
+    }
+
+    [Function("FHIRPathTester-R5")]
+    public async Task<IActionResult> RunFhirPathTestR5(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath-r5")] HttpRequest req)
+    {
+        return await ProcessFhirPathRequest(req, "R5");
+    }
+
+    [Function("FHIRPathTester-R6")]
+    public async Task<IActionResult> RunFhirPathTestR6(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath-r6")] HttpRequest req)
+    {
+        return await ProcessFhirPathRequest(req, "R6");
+    }
+
+    private async Task<IActionResult> ProcessFhirPathRequest(HttpRequest req, string fhirVersion)
+    {
+        _logger.LogInformation("FhirPath Expression Evaluation (Ignixa) - FHIR {Version}", fhirVersion);
 
         ParametersJsonNode operationParameters;
         if (req.Method != "POST")
         {
-            // Read the parameters from the request query string
             operationParameters = new ParametersJsonNode();
             foreach (var key in req.Query.Keys)
             {
@@ -100,7 +152,6 @@ public class FunctionFhirPathTest
         }
         else
         {
-            // Read the FHIR parameters resource from the request body
             operationParameters = await JsonSourceNodeFactory.ParseAsync<ParametersJsonNode>(req.Body, CancellationToken.None);
         }
 
@@ -109,12 +160,14 @@ public class FunctionFhirPathTest
         var expressionParam = operationParameters.FindParameter("expression");
         var terminologyParam = operationParameters.FindParameter("terminologyserver");
         var variablesParam = operationParameters.FindParameter("variables");
+        var debugTraceParam = operationParameters.FindParameter("debug_trace");
 
         ResourceJsonNode? resource = resourceParam?.Resource;
         string? resourceId = resource == null ? resourceParam?.GetValueAs<string>() : null;
         string? context = contextParam?.GetValueAs<string>();
         string? expression = expressionParam?.GetValueAs<string>();
         string? terminologyServerUrl = terminologyParam?.GetValueAs<string>();
+        bool debugTrace = debugTraceParam?.GetValueAs<bool>() ?? false;
 
         // Load resource from remote server if URL provided
         if (resource == null && !string.IsNullOrEmpty(resourceId) && resourceId.StartsWith("http", StringComparison.OrdinalIgnoreCase))
@@ -131,7 +184,8 @@ public class FunctionFhirPathTest
             }
         }
 
-        var result = EvaluateFhirPathTesterExpression(resourceId, resource, context, expression, terminologyServerUrl, variablesParam);
+        var schema = GetSchemaForVersion(fhirVersion);
+        var result = EvaluateFhirPathTesterExpression(resourceId, resource, context, expression, terminologyServerUrl, variablesParam, debugTrace, schema, fhirVersion);
 
         return new ContentResult
         {
@@ -149,15 +203,19 @@ public class FunctionFhirPathTest
         string? context,
         string? expression,
         string? terminologyServerUrl,
-        ParameterJsonNode? pcVariables)
+        ParameterJsonNode? pcVariables,
+        bool debugTrace,
+        ISchema schema,
+        string fhirVersion)
     {
         var result = new ParametersJsonNode { Id = "fhirpath" };
+        var traceOutput = new List<TraceEntry>();
 
         // Build configuration parameters
         var configParam = new ParameterJsonNode { Name = "parameters" };
         result.Parameter.Add(configParam);
 
-        AddPart(configParam, "evaluator", _evaluatorVersion);
+        AddPart(configParam, "evaluator", $"{_evaluatorVersion} ({fhirVersion})");
         if (!string.IsNullOrEmpty(context))
             AddPart(configParam, "context", context);
         if (!string.IsNullOrEmpty(expression))
@@ -176,7 +234,7 @@ public class FunctionFhirPathTest
         }
 
         // Parse the expression
-        Ignixa.FhirPath.Expressions.Expression parsedExpression;
+        Expression parsedExpression;
         try
         {
             parsedExpression = _fhirPathParser.Parse(expression);
@@ -186,11 +244,16 @@ public class FunctionFhirPathTest
             return CreateOperationOutcomeResult("error", "invalid", $"Invalid expression: {ex.Message}", expression);
         }
 
-        // Create evaluation context with variables
-        var evalContext = CreateEvaluationContext(pcVariables, resource);
+        // Add AST output
+        var astParam = new ParameterJsonNode { Name = "parseDebugTree" };
+        astParam.SetValue("valueString", ExpressionToAst(parsedExpression));
+        result.Parameter.Add(astParam);
+
+        // Create evaluation context with variables and trace handler
+        var evalContext = CreateEvaluationContext(pcVariables, resource, schema, debugTrace ? traceOutput : null);
 
         // Convert resource to IElement for evaluation
-        IElement? inputElement = resource?.ToElement(_r4Schema);
+        IElement? inputElement = resource?.ToElement(schema);
 
         // Determine evaluation contexts
         var contextList = new Dictionary<string, IElement?>();
@@ -220,9 +283,8 @@ public class FunctionFhirPathTest
             IEnumerable<IElement> outputValues;
             try
             {
-                outputValues = contextElement != null
-                    ? _evaluator.Evaluate(contextElement, parsedExpression, evalContext).ToList()
-                    : [];
+                // Evaluate expression - use empty collection if no context element
+                outputValues = _evaluator.Evaluate(contextElement, parsedExpression, evalContext).ToList();
             }
             catch (Exception ex)
             {
@@ -256,17 +318,36 @@ public class FunctionFhirPathTest
             }
         }
 
+        // Add trace output if enabled
+        if (debugTrace && traceOutput.Count > 0)
+        {
+            var traceParam = new ParameterJsonNode { Name = "trace" };
+            result.Parameter.Add(traceParam);
+            foreach (var trace in traceOutput)
+            {
+                var tracePart = new ParameterJsonNode { Name = trace.Name };
+                tracePart.SetValue("valueString", trace.Value);
+                traceParam.Part.Add(tracePart);
+            }
+        }
+
         return result;
     }
 
-    private static EvaluationContext CreateEvaluationContext(ParameterJsonNode? pcVariables, ResourceJsonNode? resource)
+    private record TraceEntry(string Name, string Value);
+
+    private static EvaluationContext CreateEvaluationContext(
+        ParameterJsonNode? pcVariables, 
+        ResourceJsonNode? resource, 
+        ISchema schema,
+        List<TraceEntry>? traceOutput)
     {
         EvaluationContext evalContext = new FhirEvaluationContext();
 
         // Set %resource variable if a resource is provided
         if (resource != null)
         {
-            var resourceElement = resource.ToElement(_r4Schema);
+            var resourceElement = resource.ToElement(schema);
             evalContext = ((FhirEvaluationContext)evalContext).WithResource(resourceElement).WithRootResource(resourceElement);
         }
 
@@ -282,7 +363,7 @@ public class FunctionFhirPathTest
             // Parse variable value as FHIR element by wrapping it in a temp structure
             var wrapperJson = new JsonObject { ["resourceType"] = "Basic", ["extension"] = new JsonArray { new JsonObject { ["url"] = "value", ["value"] = varValue.DeepClone() } } };
             var wrapper = JsonSourceNodeFactory.Parse<ResourceJsonNode>(wrapperJson.ToJsonString());
-            var wrapperElement = wrapper.ToElement(_r4Schema);
+            var wrapperElement = wrapper.ToElement(schema);
 
             // Extract the value from the extension
             var valueElements = wrapperElement.Children("extension")
@@ -403,6 +484,103 @@ public class FunctionFhirPathTest
             ContentType = "application/fhir+json",
             StatusCode = (int)HttpStatusCode.BadRequest
         };
+    }
+
+    /// <summary>
+    /// Converts a parsed FHIRPath expression to an AST string representation
+    /// </summary>
+    private static string ExpressionToAst(Expression expr, int indent = 0)
+    {
+        var sb = new StringBuilder();
+        var prefix = new string(' ', indent * 2);
+        
+        switch (expr)
+        {
+            case ConstantExpression ce:
+                sb.Append($"{prefix}Constant: {ce.Value} ({ce.Value?.GetType().Name ?? "null"})");
+                break;
+                
+            case VariableRefExpression vre:
+                sb.Append($"{prefix}Variable: %{vre.Name}");
+                break;
+                
+            case IdentifierExpression ide:
+                sb.Append($"{prefix}Identifier: {ide.Name}");
+                break;
+                
+            case ScopeExpression se:
+                sb.Append($"{prefix}Scope: ${se.ScopeName}");
+                break;
+                
+            case QuantityExpression qe:
+                sb.Append($"{prefix}Quantity: {qe.Value} '{qe.Unit}'");
+                break;
+                
+            case EmptyExpression:
+                sb.Append($"{prefix}Empty: {{}}");
+                break;
+                
+            case ChildExpression che:
+                sb.AppendLine($"{prefix}Child: .{che.ChildName}");
+                if (che.Focus != null)
+                    sb.Append(ExpressionToAst(che.Focus, indent + 1));
+                break;
+                
+            case PropertyAccessExpression pae:
+                sb.AppendLine($"{prefix}PropertyAccess: .{pae.PropertyName}");
+                if (pae.Focus != null)
+                    sb.Append(ExpressionToAst(pae.Focus, indent + 1));
+                break;
+                
+            case IndexerExpression ie:
+                sb.AppendLine($"{prefix}Indexer:");
+                sb.AppendLine($"{prefix}  Collection:");
+                sb.Append(ExpressionToAst(ie.Collection, indent + 2));
+                sb.AppendLine($"{prefix}  Index:");
+                sb.Append(ExpressionToAst(ie.Index, indent + 2));
+                break;
+                
+            case UnaryExpression ue:
+                sb.AppendLine($"{prefix}Unary: {ue.Operator}");
+                sb.Append(ExpressionToAst(ue.Operand, indent + 1));
+                break;
+                
+            case BinaryExpression be:
+                sb.AppendLine($"{prefix}Binary: {be.Operator}");
+                sb.AppendLine($"{prefix}  Left:");
+                sb.Append(ExpressionToAst(be.Left, indent + 2));
+                sb.AppendLine($"{prefix}  Right:");
+                sb.Append(ExpressionToAst(be.Right, indent + 2));
+                break;
+                
+            case ParenthesizedExpression pe:
+                sb.AppendLine($"{prefix}Parenthesized:");
+                sb.Append(ExpressionToAst(pe.InnerExpression, indent + 1));
+                break;
+                
+            case FunctionCallExpression fce:
+                sb.AppendLine($"{prefix}Function: {fce.FunctionName}({fce.Arguments.Count} args)");
+                if (fce.Focus != null)
+                {
+                    sb.AppendLine($"{prefix}  Focus:");
+                    sb.Append(ExpressionToAst(fce.Focus, indent + 2));
+                }
+                for (int i = 0; i < fce.Arguments.Count; i++)
+                {
+                    sb.AppendLine($"{prefix}  Arg[{i}]:");
+                    sb.Append(ExpressionToAst(fce.Arguments[i], indent + 2));
+                }
+                break;
+                
+            default:
+                sb.Append($"{prefix}{expr.GetType().Name}: {expr}");
+                break;
+        }
+        
+        if (!sb.ToString().EndsWith(Environment.NewLine))
+            sb.AppendLine();
+            
+        return sb.ToString();
     }
 
     [Function("Warmer")]
