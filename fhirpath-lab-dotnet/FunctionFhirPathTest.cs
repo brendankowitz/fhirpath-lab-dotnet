@@ -12,6 +12,7 @@ using Ignixa.FhirPath.Analysis;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.FhirPath.Expressions;
 using Ignixa.FhirPath.Parser;
+using Ignixa.FhirPath.Visitors;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -262,10 +263,10 @@ public class FunctionFhirPathTest
             return CreateOperationOutcomeResult("error", "invalid", $"Invalid expression: {ex.Message}", expression);
         }
 
-        // Add AST output
-        var astParam = new ParameterJsonNode { Name = "parseDebugTree" };
-        astParam.SetValue("valueString", ExpressionToAst(parsedExpression));
-        result.Parameter.Add(astParam);
+        // Add AST output inside the parameters part
+        var astPart = new ParameterJsonNode { Name = "parseDebugTree" };
+        astPart.SetValue("valueString", ExpressionToJsonAst(parsedExpression));
+        configParam.Part.Add(astPart);
 
         // Validate expression against schema if we have a resource type
         string? rootTypeName = resource?.ResourceType;
@@ -274,25 +275,61 @@ public class FunctionFhirPathTest
             try
             {
                 var analyzer = GetAnalyzerForVersion(fhirVersion);
-                var validationIssues = analyzer.Validate(parsedExpression, rootTypeName).ToList();
+                
+                // Determine the validation root type - if context is specified, 
+                // analyze the context expression to find the resulting type
+                string validationTypeName = rootTypeName;
+                if (!string.IsNullOrEmpty(context))
+                {
+                    try
+                    {
+                        var contextResult = analyzer.Analyze(context, rootTypeName);
+                        // Get the first inferred type from the context expression
+                        var contextTypes = contextResult.InferredTypes?.Types;
+                        if (contextTypes?.Count > 0)
+                        {
+                            var contextType = contextTypes[0];
+                            if (!string.IsNullOrEmpty(contextType.TypeName))
+                            {
+                                validationTypeName = contextType.TypeName;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // If context analysis fails, fall back to root type
+                    }
+                }
+                
+                var validationIssues = analyzer.Validate(parsedExpression, validationTypeName).ToList();
                 if (validationIssues.Count > 0)
                 {
-                    foreach (var issue in validationIssues)
+                    // Create an OperationOutcome resource for validation issues
+                    var outcome = new JsonObject
                     {
-                        var issueParam = new ParameterJsonNode { Name = issue.Severity.ToString().ToLowerInvariant() };
-                        var issuePart = new ParameterJsonNode { Name = "validation" };
-                        issuePart.SetValue("valueString", issue.Message);
-                        issueParam.Part.Add(issuePart);
-                        
-                        if (!string.IsNullOrEmpty(issue.Location))
+                        ["resourceType"] = "OperationOutcome",
+                        ["issue"] = new JsonArray(validationIssues.Select(issue => 
                         {
-                            var locPart = new ParameterJsonNode { Name = "location" };
-                            locPart.SetValue("valueString", issue.Location);
-                            issueParam.Part.Add(locPart);
-                        }
-                        
-                        result.Parameter.Add(issueParam);
-                    }
+                            var issueNode = new JsonObject
+                            {
+                                ["severity"] = issue.Severity.ToString().ToLowerInvariant(),
+                                ["code"] = GetIssueCode(issue),
+                                ["diagnostics"] = issue.Message
+                            };
+                            
+                            if (!string.IsNullOrEmpty(issue.Location))
+                            {
+                                issueNode["location"] = new JsonArray(issue.Location);
+                            }
+                            
+                            return issueNode;
+                        }).ToArray())
+                    };
+                    
+                    // Add as debugOutcome part inside parameters
+                    var outcomePart = new ParameterJsonNode { Name = "debugOutcome" };
+                    outcomePart.MutableNode["resource"] = JsonNode.Parse(outcome.ToJsonString());
+                    configParam.Part.Add(outcomePart);
                 }
             }
             catch (Exception ex)
@@ -475,17 +512,42 @@ public class FunctionFhirPathTest
 
     private static void SerializeElementChildren(IElement element, JsonObject target)
     {
-        foreach (var child in element.Children())
+        var childGroups = element.Children().GroupBy(c => c.Name);
+        foreach (var group in childGroups)
         {
-            if (child.Value != null)
+            var children = group.ToList();
+            if (children.Count == 1)
             {
-                target[child.Name] = JsonValue.Create(child.Value);
+                var child = children[0];
+                if (child.Value != null)
+                {
+                    target[child.Name] = JsonValue.Create(child.Value);
+                }
+                else
+                {
+                    var childObj = new JsonObject();
+                    SerializeElementChildren(child, childObj);
+                    target[child.Name] = childObj;
+                }
             }
             else
             {
-                var childObj = new JsonObject();
-                SerializeElementChildren(child, childObj);
-                target[child.Name] = childObj;
+                // Multiple children with same name = array
+                var array = new JsonArray();
+                foreach (var child in children)
+                {
+                    if (child.Value != null)
+                    {
+                        array.Add(JsonValue.Create(child.Value));
+                    }
+                    else
+                    {
+                        var childObj = new JsonObject();
+                        SerializeElementChildren(child, childObj);
+                        array.Add(childObj);
+                    }
+                }
+                target[group.Key] = array;
             }
         }
     }
@@ -539,6 +601,21 @@ public class FunctionFhirPathTest
             ContentType = "application/fhir+json",
             StatusCode = (int)HttpStatusCode.BadRequest
         };
+    }
+
+    private static string GetIssueCode(ValidationIssue issue)
+    {
+        // Map validation issue types to OperationOutcome issue codes
+        var message = issue.Message.ToLowerInvariant();
+        if (message.Contains("not found") || message.Contains("unknown"))
+            return "not-found";
+        if (message.Contains("not supported"))
+            return "not-supported";
+        if (message.Contains("invalid") || message.Contains("incorrect"))
+            return "invalid";
+        if (message.Contains("required"))
+            return "required";
+        return "informational";
     }
 
     /// <summary>
@@ -636,6 +713,135 @@ public class FunctionFhirPathTest
             sb.AppendLine();
             
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Converts a parsed FHIRPath expression to a JSON AST representation matching the UI's JsonNode interface
+    /// </summary>
+    private static string ExpressionToJsonAst(Expression expr)
+    {
+        var node = ExpressionToJsonNode(expr);
+        return JsonSerializer.Serialize(node, _jsonOptions);
+    }
+
+    private static JsonAstNode ExpressionToJsonNode(Expression expr)
+    {
+        var node = new JsonAstNode();
+        
+        switch (expr)
+        {
+            case ConstantExpression ce:
+                node.ExpressionType = "Constant";
+                node.Name = ce.Value?.ToString() ?? "null";
+                node.ReturnType = ce.Value?.GetType().Name;
+                break;
+                
+            case VariableRefExpression vre:
+                node.ExpressionType = "Variable";
+                node.Name = $"%{vre.Name}";
+                break;
+                
+            case IdentifierExpression ide:
+                node.ExpressionType = "Identifier";
+                node.Name = ide.Name;
+                break;
+                
+            case ScopeExpression se:
+                node.ExpressionType = "Scope";
+                node.Name = $"${se.ScopeName}";
+                break;
+                
+            case QuantityExpression qe:
+                node.ExpressionType = "Quantity";
+                node.Name = $"{qe.Value} '{qe.Unit}'";
+                break;
+                
+            case EmptyExpression:
+                node.ExpressionType = "Empty";
+                node.Name = "{}";
+                break;
+                
+            case ChildExpression che:
+                node.ExpressionType = "Child";
+                node.Name = $".{che.ChildName}";
+                if (che.Focus != null)
+                    node.Arguments = [ExpressionToJsonNode(che.Focus)];
+                break;
+                
+            case PropertyAccessExpression pae:
+                node.ExpressionType = "PropertyAccess";
+                node.Name = $".{pae.PropertyName}";
+                if (pae.Focus != null)
+                    node.Arguments = [ExpressionToJsonNode(pae.Focus)];
+                break;
+                
+            case IndexerExpression ie:
+                node.ExpressionType = "Indexer";
+                node.Name = "[]";
+                node.Arguments = [ExpressionToJsonNode(ie.Collection), ExpressionToJsonNode(ie.Index)];
+                break;
+                
+            case UnaryExpression ue:
+                node.ExpressionType = "Unary";
+                node.Name = ue.Operator.ToString();
+                node.Arguments = [ExpressionToJsonNode(ue.Operand)];
+                break;
+                
+            case BinaryExpression be:
+                node.ExpressionType = "Binary";
+                node.Name = be.Operator.ToString();
+                node.Arguments = [ExpressionToJsonNode(be.Left), ExpressionToJsonNode(be.Right)];
+                break;
+                
+            case ParenthesizedExpression pe:
+                node.ExpressionType = "Parenthesized";
+                node.Name = "()";
+                node.Arguments = [ExpressionToJsonNode(pe.InnerExpression)];
+                break;
+                
+            case FunctionCallExpression fce:
+                node.ExpressionType = "FunctionCall";
+                node.Name = fce.FunctionName;
+                var args = new List<JsonAstNode>();
+                if (fce.Focus != null)
+                    args.Add(ExpressionToJsonNode(fce.Focus));
+                foreach (var arg in fce.Arguments)
+                    args.Add(ExpressionToJsonNode(arg));
+                if (args.Count > 0)
+                    node.Arguments = args.ToArray();
+                break;
+                
+            default:
+                node.ExpressionType = expr.GetType().Name;
+                node.Name = expr.ToString() ?? "";
+                break;
+        }
+        
+        // Add position information if available
+        if (expr.Location != null)
+        {
+            node.Position = expr.Location.RawPosition;
+            node.Length = expr.Location.Length;
+            node.Line = expr.Location.LineNumber;
+            node.Column = expr.Location.LinePosition;
+        }
+        
+        return node;
+    }
+
+    /// <summary>
+    /// JSON AST node matching the UI's JsonNode interface
+    /// </summary>
+    private class JsonAstNode
+    {
+        public string ExpressionType { get; set; } = "";
+        public string Name { get; set; } = "";
+        public JsonAstNode[]? Arguments { get; set; }
+        public string? ReturnType { get; set; }
+        public int? Position { get; set; }
+        public int? Length { get; set; }
+        public int? Line { get; set; }
+        public int? Column { get; set; }
     }
 
     [Function("Warmer")]
