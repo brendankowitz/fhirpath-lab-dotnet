@@ -18,9 +18,9 @@
   </ItemGroup>
   <!-- Ignixa NuGet packages -->
   <ItemGroup>
-    <PackageReference Include="Ignixa.FhirPath" Version="0.0.149" />
-    <PackageReference Include="Ignixa.Serialization" Version="0.0.149" />
-    <PackageReference Include="Ignixa.Specification" Version="0.0.149" />
+    <PackageReference Include="Ignixa.FhirPath" Version="0.0.150" />
+    <PackageReference Include="Ignixa.Serialization" Version="0.0.150" />
+    <PackageReference Include="Ignixa.Specification" Version="0.0.150" />
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
