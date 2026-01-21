@@ -20,6 +20,7 @@ namespace FhirPathLab_DotNetEngine.Services;
 public sealed class ResultFormatter
 {
     private const string ExtensionUrlJsonValue = "http://fhir.forms-lab.com/StructureDefinition/json-value";
+    private const string ExtensionUrlResourcePath = "http://fhir.forms-lab.com/StructureDefinition/resource-path";
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private static readonly string EvaluatorVersion = GetEvaluatorVersion();
 
@@ -233,13 +234,19 @@ public sealed class ResultFormatter
             var resultPart = new ParameterJsonNode { Name = outputValue.InstanceType ?? "(null)" };
             resultParam.Part.Add(resultPart);
 
+            // Add resource path extension if location is available
+            if (!string.IsNullOrEmpty(outputValue.Location))
+            {
+                AddPathExtension(resultPart, outputValue.Location);
+            }
+
             if (outputValue.Value != null)
             {
                 SetTypedValue(resultPart, outputValue.InstanceType!, outputValue.Value);
             }
             else
             {
-                AddExtension(resultPart, ExtensionUrlJsonValue, SerializeElementToJson(outputValue));
+                AddJsonValueExtension(resultPart, SerializeElementToJson(outputValue));
             }
         }
 
@@ -253,6 +260,12 @@ public sealed class ResultFormatter
             {
                 var elementPart = new ParameterJsonNode { Name = element.InstanceType ?? string.Empty };
                 traceParam.Part.Add(elementPart);
+
+                // Add resource path extension if location is available
+                if (!string.IsNullOrEmpty(element.Location))
+                {
+                    AddPathExtension(elementPart, element.Location);
+                }
 
                 if (element.Value != null)
                 {
@@ -287,16 +300,31 @@ public sealed class ResultFormatter
         param.SetValue(valueTypeName, JsonValue.Create(value));
     }
 
-    private static void AddExtension(ParameterJsonNode param, string url, string value)
+    private static void AddPathExtension(ParameterJsonNode param, string path)
     {
-        param.MutableNode["extension"] = new JsonArray
+        AddExtensionToParam(param, ExtensionUrlResourcePath, path);
+    }
+
+    private static void AddJsonValueExtension(ParameterJsonNode param, string jsonValue)
+    {
+        AddExtensionToParam(param, ExtensionUrlJsonValue, jsonValue);
+    }
+
+    private static void AddExtensionToParam(ParameterJsonNode param, string url, string value)
+    {
+        // Get or create extension array
+        if (param.MutableNode["extension"] is not JsonArray extensionArray)
         {
-            new JsonObject
-            {
-                ["url"] = url,
-                ["valueString"] = value
-            }
-        };
+            extensionArray = new JsonArray();
+            param.MutableNode["extension"] = extensionArray;
+        }
+
+        // Add new extension
+        extensionArray.Add(new JsonObject
+        {
+            ["url"] = url,
+            ["valueString"] = value
+        });
     }
 
     private static string SerializeElementToJson(IElement element)

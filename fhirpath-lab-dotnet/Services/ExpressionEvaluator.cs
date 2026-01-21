@@ -87,14 +87,10 @@ public sealed class ExpressionEvaluator
 
             try
             {
-                if (contextElement == null)
-                {
-                    outputValues = [];
-                }
-                else
-                {
-                    outputValues = Evaluator.Evaluate(contextElement, parsedExpression.Expression, evalContext).ToList();
-                }
+                // When no resource is provided, use an empty placeholder element
+                // This allows expressions like (1 | 2 | 3) to evaluate without a resource context
+                var evaluationRoot = contextElement ?? new EmptyElement();
+                outputValues = Evaluator.Evaluate(evaluationRoot, parsedExpression.Expression, evalContext).ToList();
             }
             catch (Exception ex)
             {
@@ -175,5 +171,20 @@ public sealed class ExpressionEvaluator
         }
 
         return evalContext;
+    }
+
+    /// <summary>
+    /// Minimal IElement implementation used as a placeholder when no resource is provided.
+    /// Allows expressions like (1 | 2 | 3) to evaluate without a resource context.
+    /// </summary>
+    private sealed class EmptyElement : IElement
+    {
+        public string Name => string.Empty;
+        public string InstanceType => "Base";
+        public object Value => 0;
+        public string Location => string.Empty;
+        public IType? Type => null;
+        public IReadOnlyList<IElement> Children(string? name = null) => [];
+        public T? Meta<T>() where T : class => null;
     }
 }
