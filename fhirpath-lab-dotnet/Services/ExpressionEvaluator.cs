@@ -121,11 +121,25 @@ public sealed class ExpressionEvaluator
             evalContext = evalContext.WithTraceHandler(entry => traceOutput.Add(entry));
         }
 
+        // Set up element resolver for resolve() function and %resource variable
+        // This creates lightweight resources from reference strings to enable type checking
+        // and resolves contained resources from the root resource
+        LightweightElementResolver? elementResolver = null;
+        if (schema is IFhirSchemaProvider schemaProvider && evalContext is FhirEvaluationContext fhirCtx)
+        {
+            elementResolver = new LightweightElementResolver(schemaProvider);
+            evalContext = fhirCtx.WithElementResolver(elementResolver.Resolve);
+        }
+
         // Set %resource variable if a resource is provided
-        if (resource != null)
+        if (resource != null && evalContext is FhirEvaluationContext fhirContext)
         {
             var resourceElement = resource.ToElement(schema);
-            evalContext = ((FhirEvaluationContext)evalContext)
+
+            // Set the root resource on the resolver so it can resolve contained references
+            elementResolver?.SetRootResource(resourceElement);
+
+            evalContext = fhirContext
                 .WithResource(resourceElement)
                 .WithRootResource(resourceElement);
         }
@@ -182,6 +196,7 @@ public sealed class ExpressionEvaluator
         public string Name => string.Empty;
         public string InstanceType => "Base";
         public object Value => 0;
+        public bool HasPrimitiveValue => true;
         public string Location => string.Empty;
         public IType? Type => null;
         public IReadOnlyList<IElement> Children(string? name = null) => [];

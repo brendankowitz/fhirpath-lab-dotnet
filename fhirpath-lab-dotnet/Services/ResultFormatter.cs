@@ -240,13 +240,15 @@ public sealed class ResultFormatter
                 AddPathExtension(resultPart, outputValue.Location);
             }
 
-            if (outputValue.Value != null)
+            if (outputValue.Value != null && outputValue.HasPrimitiveValue)
             {
                 SetTypedValue(resultPart, outputValue.InstanceType!, outputValue.Value);
             }
             else
             {
-                AddJsonValueExtension(resultPart, SerializeElementToJson(outputValue));
+                // For complex types, serialize using Children() to get proper FHIR structure
+                var json = SerializeElementToJson(outputValue);
+                resultPart.MutableNode[$"value{outputValue.InstanceType}"] = JsonNode.Parse(json);
             }
         }
 
@@ -267,12 +269,13 @@ public sealed class ResultFormatter
                     AddPathExtension(elementPart, element.Location);
                 }
 
-                if (element.Value != null)
+                if (element.Value != null && element.HasPrimitiveValue)
                 {
                     SetTypedValue(elementPart, element.InstanceType!, element.Value);
                 }
                 else
                 {
+                    // For complex types, serialize using Children() to get proper FHIR structure
                     var json = SerializeElementToJson(element);
                     elementPart.MutableNode[$"value{element.InstanceType}"] = JsonNode.Parse(json);
                 }
@@ -296,6 +299,7 @@ public sealed class ResultFormatter
 
     private static void SetTypedValue(ParameterJsonNode param, string instanceType, object value)
     {
+        // Ignixa returns values in the correct FHIR format, just pass through
         var valueTypeName = $"value{char.ToUpperInvariant(instanceType[0])}{instanceType[1..]}";
         param.SetValue(valueTypeName, JsonValue.Create(value));
     }
