@@ -1,0 +1,53 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/azure/functions-action
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+
+name: Build and deploy dotnet core project to Azure Function App - ignixafhirpath
+
+on:
+  push:
+    branches:
+      - dev/ignixa-fhirpath
+  workflow_dispatch:
+
+env:
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'fhirpath-lab-dotnet' # set this to the path to your web app project
+  DOTNET_VERSION: '9.0.x' # set this to the dotnet version to use
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
+
+    steps:
+      - name: 'Checkout GitHub Action'
+        uses: actions/checkout@v4
+
+      - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: 'Resolve Project Dependencies Using Dotnet'
+        shell: bash
+        run: |
+          pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
+          dotnet publish --configuration Release --runtime linux-x64 --self-contained false --output ./output
+          popd
+      
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_8DDF7E60DD7A44A3B61B00ECC272EFD4 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_B4F41DF0200C42FD915230C10A563D0D }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_60E5BFB0E0D24717803DCA2EC0AF3A7D }}
+
+      - name: 'Run Azure Functions Action'
+        uses: Azure/functions-action@v1
+        id: fa
+        with:
+          app-name: 'ignixafhirpath'
+          slot-name: 'Production'
+          package: '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/output'
+          
