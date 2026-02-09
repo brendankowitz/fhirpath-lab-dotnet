@@ -6,7 +6,7 @@ name: Build and deploy dotnet core project to Azure Function App - ignixafhirpat
 on:
   push:
     branches:
-      - dev/ignixa-fhirpath
+      - main
   workflow_dispatch:
 
 env:
