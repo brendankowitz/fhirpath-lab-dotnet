@@ -344,7 +344,9 @@ public sealed class ResultFormatter
         foreach (var group in childGroups)
         {
             var children = group.ToList();
-            if (children.Count == 1)
+            bool isCollection = children.Count > 1 || IsCollectionElement(children[0]);
+
+            if (!isCollection)
             {
                 var child = children[0];
                 if (child.Value != null)
@@ -360,7 +362,6 @@ public sealed class ResultFormatter
             }
             else
             {
-                // Multiple children with same name = array
                 var array = new JsonArray();
                 foreach (var child in children)
                 {
@@ -378,6 +379,21 @@ public sealed class ResultFormatter
                 target[group.Key] = array;
             }
         }
+    }
+
+    private static bool IsCollectionElement(IElement element)
+    {
+        if (element.Type?.IsCollection == true)
+            return true;
+
+        if (!string.IsNullOrEmpty(element.Location))
+        {
+            var lastSegment = element.Location.Split('.')[^1];
+            if (lastSegment.Contains('[', StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     private static string ExpressionToJsonAst(
