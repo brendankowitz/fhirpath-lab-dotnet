@@ -229,11 +229,16 @@ public class JsonAstVisitor : IFhirPathExpressionVisitor<AnalysisResult?, JsonOb
         if (context?.NodeTypes?.TryGetValue(expression, out var typeSet) == true && typeSet.Types.Count > 0)
         {
             var typeNames = typeSet.Types.Select(t => t.TypeName).Where(t => !string.IsNullOrEmpty(t)).Distinct();
-            var isCollection = typeSet.Types.Any(t => t.IsCollection);
             var typeName = string.Join(", ", typeNames);
-            if (isCollection && !typeName.EndsWith("[]"))
-                typeName += "[]";
-            node["ReturnType"] = typeName;
+
+            // Only set ReturnType if we have actual type names
+            if (!string.IsNullOrEmpty(typeName))
+            {
+                var isCollection = typeSet.Types.Any(t => t.IsCollection);
+                if (isCollection && !typeName.EndsWith("[]"))
+                    typeName += "[]";
+                node["ReturnType"] = typeName;
+            }
         }
 
         return node;

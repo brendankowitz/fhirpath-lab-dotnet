@@ -75,6 +75,26 @@ public sealed class ResultFormatter
                 result.ParsedExpression.Analysis,
                 result.ParsedExpression.ExpressionScopeType));
 
+            AddPart(configParam, "parseDebug", ExpressionToDebugText(
+                result.ParsedExpression.Expression,
+                result.ParsedExpression.Analysis));
+
+            // Add expected return type from analysis
+            if (result.ParsedExpression.Analysis?.InferredTypes?.Types.Count > 0)
+            {
+                var types = result.ParsedExpression.Analysis.InferredTypes.Types
+                    .Select(t => t.ToString())
+                    .Where(t => !string.IsNullOrEmpty(t))
+                    .Distinct()
+                    .ToList();
+
+                if (types.Count > 0)
+                {
+                    var expectedType = types.Count == 1 ? types[0] : string.Join(" | ", types);
+                    AddPart(configParam, "expectedReturnType", expectedType);
+                }
+            }
+
             // Add validation issues if any
             if (result.ParsedExpression.ValidationIssues?.Count > 0)
             {
@@ -94,6 +114,12 @@ public sealed class ResultFormatter
             }
 
             AddResultParameter(parameters, evalResult.ContextPath, evalResult.OutputValues, evalResult.TraceOutput);
+
+            // Add debug trace entries if any
+            if (evalResult.DebugTraceEntries.Count > 0)
+            {
+                AddDebugTraceParameter(parameters, evalResult.DebugTraceEntries);
+            }
         }
 
         return parameters;
@@ -283,6 +309,63 @@ public sealed class ResultFormatter
         }
     }
 
+    private static void AddDebugTraceParameter(ParametersJsonNode parameters, List<NodeEvaluationEntry> debugTraceEntries)
+    {
+        // Create the debug-trace wrapper parameter
+        var debugTraceParam = new ParameterJsonNode { Name = "debug-trace" };
+        parameters.Parameter.Add(debugTraceParam);
+
+        // Group entries by their key
+        var groupedEntries = debugTraceEntries.GroupBy(entry => entry.GetKey());
+
+        foreach (var group in groupedEntries)
+        {
+            var debugParam = new ParameterJsonNode { Name = group.Key };
+            debugTraceParam.Part.Add(debugParam);
+
+            foreach (var entry in group)
+            {
+                // Add resource-path parts from Results
+                foreach (var result in entry.Results)
+                {
+                    if (!string.IsNullOrEmpty(result.Location))
+                    {
+                        var resourcePathPart = new ParameterJsonNode { Name = "resource-path" };
+                        resourcePathPart.SetValue("valueString", result.Location);
+                        debugParam.Part.Add(resourcePathPart);
+                    }
+                }
+
+                // Add focus-resource-path parts from FocusElements
+                foreach (var focusElement in entry.FocusElements)
+                {
+                    if (!string.IsNullOrEmpty(focusElement.Location))
+                    {
+                        var focusPathPart = new ParameterJsonNode { Name = "focus-resource-path" };
+                        focusPathPart.SetValue("valueString", focusElement.Location);
+                        debugParam.Part.Add(focusPathPart);
+                    }
+                }
+
+                // Add this-resource-path part from ThisElement
+                if (entry.ThisElement != null && !string.IsNullOrEmpty(entry.ThisElement.Location))
+                {
+                    var thisPathPart = new ParameterJsonNode { Name = "this-resource-path" };
+                    thisPathPart.SetValue("valueString", entry.ThisElement.Location);
+                    debugParam.Part.Add(thisPathPart);
+                }
+
+                // Add index part
+                if (entry.Index.HasValue)
+                {
+                    var indexPart = new ParameterJsonNode { Name = "index" };
+                    indexPart.SetValue("valueInteger", JsonValue.Create(entry.Index.Value));
+                    debugParam.Part.Add(indexPart);
+                }
+            }
+        }
+    }
+
     private static void AddPart(ParameterJsonNode parent, string name, string value)
     {
         var part = new ParameterJsonNode { Name = name };
@@ -413,19 +496,110 @@ public sealed class ResultFormatter
                 .Distinct()
                 .ToList();
 
-            string returnType;
-            if (types.Count == 1)
+            // Only set ReturnType if we have actual type names
+            if (types.Count > 0)
             {
-                returnType = types[0];
-            }
-            else
-            {
-                returnType = string.Join(" | ", types);
-            }
+                string returnType;
+                if (types.Count == 1)
+                {
+                    returnType = types[0];
+                }
+                else
+                {
+                    returnType = string.Join(" | ", types);
+                }
 
-            node["ReturnType"] = returnType;
+                var isCollection = analysisResult.InferredTypes.Types.Any(t => t.IsCollection);
+                if (isCollection && !returnType.EndsWith("[]"))
+                    returnType += "[]";
+
+                node["ReturnType"] = returnType;
+            }
         }
 
         return node.ToJsonString(JsonOptions);
+    }
+
+    private static string ExpressionToDebugText(
+        Expression expr,
+        AnalysisResult? analysisResult)
+    {
+        // Get expression text from position info or visitor
+        var exprText = ExpressionToText(expr);
+        
+        // Get return type
+        string returnType = "";
+        if (analysisResult?.InferredTypes?.Types.Count > 0)
+        {
+            var types = analysisResult.InferredTypes.Types
+                .Select(t => t.ToString())
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Distinct()
+                .ToList();
+            returnType = types.Count == 1 ? types[0] : string.Join(" | ", types);
+        }
+        
+        return string.IsNullOrEmpty(returnType) 
+            ? $"{exprText}\r\n" 
+            : $"{exprText} : {returnType}\r\n";
+    }
+
+    private static string ExpressionToText(Expression expr)
+    {
+        return expr switch
+        {
+            // ChildExpression derives from FunctionCallExpression, match first
+            ChildExpression child => child.Focus != null
+                ? $"{ExpressionToText(child.Focus)}.{child.ChildName}"
+                : child.ChildName,
+            // BinaryExpression derives from FunctionCallExpression, match first
+            BinaryExpression bin => $"{ExpressionToText(bin.Left)} {bin.Operator} {ExpressionToText(bin.Right)}",
+            // IndexerExpression derives from FunctionCallExpression, match first
+            IndexerExpression indexer => $"{ExpressionToText(indexer.Collection)}[{ExpressionToText(indexer.Index)}]",
+            // UnaryExpression derives from FunctionCallExpression, match first
+            UnaryExpression unary => $"{unary.Operator}{ExpressionToText(unary.Operand)}",
+            // PropertyAccessExpression must be before FunctionCallExpression
+            PropertyAccessExpression prop => prop.Focus != null
+                ? $"{ExpressionToText(prop.Focus)}.{prop.PropertyName}"
+                : prop.PropertyName,
+            FunctionCallExpression func => FormatFunctionCall(func),
+            ConstantExpression constant => FormatConstant(constant),
+            IdentifierExpression id => id.Name,
+            ParenthesizedExpression paren => $"({ExpressionToText(paren.InnerExpression)})",
+            ScopeExpression scope => scope.ScopeName switch
+            {
+                "this" => "$this",
+                "index" => "$index",
+                "total" => "$total",
+                _ => "$this"
+            },
+            VariableRefExpression varRef => $"%{varRef.Name}",
+            _ => expr.ToString() ?? ""
+        };
+    }
+
+    private static string FormatConstant(ConstantExpression constant)
+    {
+        if (constant.Value == null) return "{}";
+        return constant.Value switch
+        {
+            string s when s.StartsWith('@') => s,
+            string s => $"'{s}'",
+            bool b => b ? "true" : "false",
+            int i => i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            long l => l.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            decimal d => d.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            double d => d.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            float f => f.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}", constant.Value)
+        };
+    }
+
+    private static string FormatFunctionCall(FunctionCallExpression func)
+    {
+        var focus = func.Focus != null ? ExpressionToText(func.Focus) : "";
+        var args = string.Join(", ", func.Arguments.Select(ExpressionToText));
+        var prefix = string.IsNullOrEmpty(focus) ? "" : $"{focus}.";
+        return $"{prefix}{func.FunctionName}({args})";
     }
 }

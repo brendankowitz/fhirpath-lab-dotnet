@@ -22,6 +22,7 @@ public sealed record EvaluationResult(
     string ContextPath,
     List<IElement> OutputValues,
     List<TraceEntry> TraceOutput,
+    List<NodeEvaluationEntry> DebugTraceEntries,
     string? Error);
 
 /// <summary>

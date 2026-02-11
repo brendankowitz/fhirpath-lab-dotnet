@@ -64,13 +64,15 @@ public sealed class ExpressionEvaluator
     /// <param name="resource">The FHIR resource.</param>
     /// <param name="variables">Optional variables.</param>
     /// <param name="fhirVersion">The FHIR version.</param>
+    /// <param name="debugTrace">Whether to capture debug trace entries.</param>
     /// <returns>List of evaluation results for each context.</returns>
     public List<EvaluationResult> Evaluate(
         ParsedExpression parsedExpression,
         Expression? contextExpression,
         ResourceJsonNode? resource,
         ParameterJsonNode? variables,
-        string fhirVersion)
+        string fhirVersion,
+        bool debugTrace = false)
     {
         var schema = _schemaFactory.GetSchema(fhirVersion);
         IElement? inputElement = resource?.ToElement(schema);
@@ -80,7 +82,14 @@ public sealed class ExpressionEvaluator
         foreach (var (contextPath, contextElement) in contexts)
         {
             var traceOutput = new List<TraceEntry>();
+            var debugTraceEntries = new List<NodeEvaluationEntry>();
             var evalContext = CreateEvaluationContext(variables, resource, schema, traceOutput);
+
+            // Add debug trace handler if requested
+            if (debugTrace)
+            {
+                evalContext = evalContext.WithNodeEvaluationHandler(entry => debugTraceEntries.Add(entry));
+            }
 
             List<IElement> outputValues;
             string? error = null;
@@ -98,7 +107,7 @@ public sealed class ExpressionEvaluator
                 error = $"Expression evaluation error: {ex.Message}";
             }
 
-            results.Add(new EvaluationResult(contextPath, outputValues, traceOutput, error));
+            results.Add(new EvaluationResult(contextPath, outputValues, traceOutput, debugTraceEntries, error));
         }
 
         return results;

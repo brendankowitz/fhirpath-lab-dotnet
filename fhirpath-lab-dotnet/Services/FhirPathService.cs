@@ -77,7 +77,8 @@ public sealed class FhirPathService
             contextExpr,
             request.Resource,
             request.Variables,
-            request.FhirVersion);
+            request.FhirVersion,
+            request.DebugTrace);
 
         return new FhirPathResult
         {
