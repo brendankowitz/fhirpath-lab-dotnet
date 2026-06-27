@@ -115,7 +115,7 @@ public class IgnixaApiTests : IAsyncLifetime
         var resultParam = result.Parameter.FirstOrDefault(p => p.Name == "result");
         if (resultParam?.Part == null)
             return new List<DataType?>();
-        return resultParam.Part.Select(p => p.Value).ToList();
+        return resultParam.Part.Select(p => (DataType?)p.Value).ToList();
     }
     
     #endregion

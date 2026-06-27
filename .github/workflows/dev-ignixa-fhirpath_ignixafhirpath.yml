@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
-        uses: actions/setup-dotnet@v1
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -37,7 +37,7 @@ jobs:
           popd
       
       - name: Login to Azure
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_8DDF7E60DD7A44A3B61B00ECC272EFD4 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_B4F41DF0200C42FD915230C10A563D0D }}
