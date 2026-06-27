@@ -17,7 +17,7 @@
     <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="2.51.0" />
     <PackageReference Include="Ignixa.FhirPath" Version="0.5.6" />
     <PackageReference Include="Ignixa.Serialization" Version="0.5.6" />
-    <PackageReference Include="Ignixa.Specification" Version="0.0.163" />
+    <PackageReference Include="Ignixa.Specification" Version="0.5.6" />
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
