@@ -140,6 +140,7 @@ public sealed class ExpressionEvaluator
         {
             elementResolver = new LightweightElementResolver(schemaProvider);
             evalContext = fhirCtx.WithElementResolver(elementResolver.Resolve);
+            evalContext = evalContext.WithInstanceCreator(_schemaFactory.GetInstanceFactory(schemaProvider).Create);
         }
 
         // Set %resource variable if a resource is provided

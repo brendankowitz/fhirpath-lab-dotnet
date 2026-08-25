@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Analysis;
+using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification.Generated;
 using Ignixa.Specification.Extensions;
 
@@ -17,6 +19,9 @@ public sealed class SchemaProviderFactory
     private static readonly Lazy<IFhirSchemaProvider> R4BSchema = new(() => FhirVersion.R4B.GetSchemaProvider());
     private static readonly Lazy<IFhirSchemaProvider> R5Schema = new(() => FhirVersion.R5.GetSchemaProvider());
     private static readonly Lazy<IFhirSchemaProvider> R6Schema = new(() => FhirVersion.R6.GetSchemaProvider());
+
+    // Instance factories are stateless apart from their long-lived schema provider and are safe to reuse.
+    private static readonly ConcurrentDictionary<IFhirSchemaProvider, SourceNodeInstanceFactory> InstanceFactories = new();
 
     // Lazy-initialized analyzers for each FHIR version (stateless, safe to reuse)
     private static readonly Lazy<FhirPathAnalyzer> Stu3Analyzer = new(() => new FhirPathAnalyzer(Stu3Schema.Value));
@@ -39,6 +44,14 @@ public sealed class SchemaProviderFactory
         "R6" => R6Schema.Value,
         _ => R4Schema.Value
     };
+
+    /// <summary>
+    /// Gets the cached source node instance factory for a FHIR schema provider.
+    /// </summary>
+    /// <param name="schemaProvider">The schema provider used to construct FHIR elements.</param>
+    /// <returns>A thread-safe cached instance factory for the specified schema provider.</returns>
+    public SourceNodeInstanceFactory GetInstanceFactory(IFhirSchemaProvider schemaProvider) =>
+        InstanceFactories.GetOrAdd(schemaProvider, static provider => new SourceNodeInstanceFactory(provider));
 
     /// <summary>
     /// Gets the FHIRPath analyzer for the specified FHIR version.
