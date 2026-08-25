@@ -81,12 +81,17 @@ public class InstanceSelectorTests
     }
 
     [Fact]
-    public void GivenInstanceSelector_WhenEvaluated_ThenDoesNotReportMissingInstanceCreator()
+    public void GivenInstanceSelector_WhenEvaluated_ThenConstructsCodingWithAssignedCode()
     {
         var result = Evaluate("Coding { code: '8480-6' }");
 
         result.Error.Should().BeNull();
-        result.Error.Should().NotContain("no instance creator is configured");
+        result.OutputValues.Should().ContainSingle();
+
+        var coding = result.OutputValues[0];
+        coding.InstanceType.Should().Be("Coding");
+        coding.Children("code").Should().ContainSingle()
+            .Which.Value.Should().Be("8480-6");
     }
 
     [Fact]
