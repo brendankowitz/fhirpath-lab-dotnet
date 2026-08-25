@@ -121,6 +121,28 @@ public class JsonAstVisitor : IFhirPathExpressionVisitor<AnalysisResult?, JsonOb
         return node;
     }
 
+    public JsonObject VisitInstanceSelector(InstanceSelectorExpression expression, AnalysisResult? context)
+    {
+        var node = CreateNode(expression, "InstanceSelectorExpression", expression.FullTypeName, context);
+        node["TypeName"] = expression.TypeName;
+
+        if (expression.NamespacePrefix is not null)
+        {
+            node["NamespacePrefix"] = expression.NamespacePrefix;
+        }
+
+        node["IsEmpty"] = expression.IsEmpty;
+        node["Arguments"] = new JsonArray(
+            expression.Elements.Select(element =>
+            {
+                var assignment = CreateNode(element.ValueExpression, "ElementAssignment", element.ElementName, context);
+                assignment["Arguments"] = new JsonArray(element.ValueExpression.AcceptVisitor(this, context));
+                return assignment;
+            }).ToArray());
+
+        return node;
+    }
+
     public JsonObject VisitParenthesized(ParenthesizedExpression expression, AnalysisResult? context)
     {
         var node = CreateNode(expression, "Parenthesized", "()", context);

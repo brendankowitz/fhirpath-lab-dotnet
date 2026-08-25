@@ -6,11 +6,13 @@ using Ignixa.FhirPath.Analysis;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.FhirPath.Expressions;
 using Ignixa.FhirPath.Visitors;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using FhirPathLab_DotNetEngine.Models;
 using FhirPathLab_DotNetEngine.Serialization;
+using Expression = Ignixa.FhirPath.Expressions.Expression;
 
 namespace FhirPathLab_DotNetEngine.Services;
 
@@ -57,7 +59,7 @@ public sealed class ResultFormatter
             return CreateOperationOutcomeResult("error", "invalid", result.Error!, result.ErrorDiagnostics);
         }
 
-        var parameters = new ParametersJsonNode { Id = "fhirpath" };
+        var parameters = new Parameters { Id = "fhirpath" };
         var configParam = BuildConfigParameters(
             parameters,
             result.Request.FhirVersion,
@@ -107,7 +109,7 @@ public sealed class ResultFormatter
         {
             if (evalResult.Error != null)
             {
-                var errorParam = new ParameterJsonNode { Name = "error" };
+                var errorParam = new ParametersParameter { Name = "error" };
                 errorParam.SetValue("valueString", evalResult.Error);
                 parameters.Parameter.Add(errorParam);
                 return parameters;
@@ -134,24 +136,24 @@ public sealed class ResultFormatter
         string message,
         string? diagnostics = null)
     {
-        var outcome = new OperationOutcomeJsonNode();
-        var issue = new OperationOutcomeJsonNode.IssueComponent
+        var outcome = new OperationOutcome();
+        var issue = new OperationOutcomeIssue
         {
-            Severity = severity switch
+            SeverityCode = severity switch
             {
-                "error" => OperationOutcomeJsonNode.IssueSeverity.Error,
-                "warning" => OperationOutcomeJsonNode.IssueSeverity.Warning,
-                "information" => OperationOutcomeJsonNode.IssueSeverity.Information,
-                _ => OperationOutcomeJsonNode.IssueSeverity.Error
+                "error" => OperationOutcomeIssue.IssueSeverityCode.Error,
+                "warning" => OperationOutcomeIssue.IssueSeverityCode.Warning,
+                "information" => OperationOutcomeIssue.IssueSeverityCode.Information,
+                _ => OperationOutcomeIssue.IssueSeverityCode.Error
             },
-            Code = code switch
+            IssueTypeCode = code switch
             {
-                "required" => OperationOutcomeJsonNode.IssueType.Required,
-                "invalid" => OperationOutcomeJsonNode.IssueType.Invalid,
-                "not-found" => OperationOutcomeJsonNode.IssueType.NotFound,
-                _ => OperationOutcomeJsonNode.IssueType.Exception
+                "required" => OperationOutcomeIssue.IssueTypeCommon.Required,
+                "invalid" => OperationOutcomeIssue.IssueTypeCommon.Invalid,
+                "not-found" => OperationOutcomeIssue.IssueTypeCommon.NotFound,
+                _ => OperationOutcomeIssue.IssueTypeCommon.Exception
             },
-            Details = new CodeableConceptJsonNode { Text = message },
+            Details = new CodeableConcept { Text = message },
             Diagnostics = diagnostics!
         };
         outcome.Issue.Add(issue);
@@ -159,8 +161,8 @@ public sealed class ResultFormatter
         return outcome;
     }
 
-    private static ParameterJsonNode BuildConfigParameters(
-        ParametersJsonNode result,
+    private static ParametersParameter BuildConfigParameters(
+        Parameters result,
         string fhirVersion,
         string? context,
         string? expression,
@@ -168,7 +170,7 @@ public sealed class ResultFormatter
         ResourceJsonNode? resource,
         string? terminologyServerUrl)
     {
-        var configParam = new ParameterJsonNode { Name = "parameters" };
+        var configParam = new ParametersParameter { Name = "parameters" };
         result.Parameter.Add(configParam);
 
         AddPart(configParam, "evaluator", $"{EvaluatorVersion} ({fhirVersion})");
@@ -196,16 +198,16 @@ public sealed class ResultFormatter
         return configParam;
     }
 
-    private static void AddValidationOutcome(ParameterJsonNode configParam, List<ValidationIssue> issues)
+    private static void AddValidationOutcome(ParametersParameter configParam, List<ValidationIssue> issues)
     {
-        var outcome = new OperationOutcomeJsonNode();
+        var outcome = new OperationOutcome();
 
         foreach (var issue in issues)
         {
-            var issueComponent = new OperationOutcomeJsonNode.IssueComponent
+            var issueComponent = new OperationOutcomeIssue
             {
-                Severity = MapSeverity(issue.Severity),
-                Code = MapIssueCode(issue),
+                SeverityCode = MapSeverity(issue.Severity),
+                IssueTypeCode = MapIssueCode(issue),
                 Diagnostics = issue.Message
             };
 
@@ -215,40 +217,40 @@ public sealed class ResultFormatter
             outcome.Issue.Add(issueComponent);
         }
 
-        var outcomePart = new ParameterJsonNode { Name = "debugOutcome" };
-        outcomePart.MutableNode["resource"] = JsonNode.Parse(outcome.SerializeToString());
+        var outcomePart = new ParametersParameter { Name = "debugOutcome" };
+        ((IMutableJsonNode)outcomePart).MutableNode["resource"] = JsonNode.Parse(outcome.SerializeToString());
         configParam.Part.Add(outcomePart);
     }
 
-    private static OperationOutcomeJsonNode.IssueSeverity MapSeverity(ValidationIssueSeverity severity) => severity switch
+    private static OperationOutcomeIssue.IssueSeverityCode MapSeverity(ValidationIssueSeverity severity) => severity switch
     {
-        ValidationIssueSeverity.Error => OperationOutcomeJsonNode.IssueSeverity.Error,
-        ValidationIssueSeverity.Warning => OperationOutcomeJsonNode.IssueSeverity.Warning,
-        ValidationIssueSeverity.Information => OperationOutcomeJsonNode.IssueSeverity.Information,
-        _ => OperationOutcomeJsonNode.IssueSeverity.Information
+        ValidationIssueSeverity.Error => OperationOutcomeIssue.IssueSeverityCode.Error,
+        ValidationIssueSeverity.Warning => OperationOutcomeIssue.IssueSeverityCode.Warning,
+        ValidationIssueSeverity.Information => OperationOutcomeIssue.IssueSeverityCode.Information,
+        _ => OperationOutcomeIssue.IssueSeverityCode.Information
     };
 
-    private static OperationOutcomeJsonNode.IssueType MapIssueCode(ValidationIssue issue)
+    private static OperationOutcomeIssue.IssueTypeCommon MapIssueCode(ValidationIssue issue)
     {
         var message = issue.Message.ToLowerInvariant();
         if (message.Contains("not found") || message.Contains("unknown"))
-            return OperationOutcomeJsonNode.IssueType.NotFound;
+            return OperationOutcomeIssue.IssueTypeCommon.NotFound;
         if (message.Contains("not supported"))
-            return OperationOutcomeJsonNode.IssueType.NotSupported;
+            return OperationOutcomeIssue.IssueTypeCommon.NotSupported;
         if (message.Contains("invalid") || message.Contains("incorrect"))
-            return OperationOutcomeJsonNode.IssueType.Invalid;
+            return OperationOutcomeIssue.IssueTypeCommon.Invalid;
         if (message.Contains("required"))
-            return OperationOutcomeJsonNode.IssueType.Required;
-        return OperationOutcomeJsonNode.IssueType.Informational;
+            return OperationOutcomeIssue.IssueTypeCommon.Required;
+        return OperationOutcomeIssue.IssueTypeCommon.Informational;
     }
 
     private static void AddResultParameter(
-        ParametersJsonNode result,
+        Parameters result,
         string contextPath,
         IEnumerable<IElement> outputValues,
         List<TraceEntry> traceOutput)
     {
-        var resultParam = new ParameterJsonNode { Name = "result" };
+        var resultParam = new ParametersParameter { Name = "result" };
         if (!string.IsNullOrEmpty(contextPath))
         {
             resultParam.SetValue("valueString", contextPath);
@@ -257,7 +259,7 @@ public sealed class ResultFormatter
 
         foreach (var outputValue in outputValues)
         {
-            var resultPart = new ParameterJsonNode { Name = outputValue.InstanceType ?? "(null)" };
+            var resultPart = new ParametersParameter { Name = outputValue.InstanceType ?? "(null)" };
             resultParam.Part.Add(resultPart);
 
             // Add resource path extension if location is available
@@ -274,19 +276,19 @@ public sealed class ResultFormatter
             {
                 // For complex types, serialize using Children() to get proper FHIR structure
                 var json = SerializeElementToJson(outputValue);
-                resultPart.MutableNode[$"value{outputValue.InstanceType}"] = JsonNode.Parse(json);
+                ((IMutableJsonNode)resultPart).MutableNode[$"value{outputValue.InstanceType}"] = JsonNode.Parse(json);
             }
         }
 
         foreach (var trace in traceOutput)
         {
-            var traceParam = new ParameterJsonNode { Name = "trace" };
+            var traceParam = new ParametersParameter { Name = "trace" };
             traceParam.SetValue("valueString", trace.Name);
             resultParam.Part.Add(traceParam);
 
             foreach (var element in trace.Focus)
             {
-                var elementPart = new ParameterJsonNode { Name = element.InstanceType ?? string.Empty };
+                var elementPart = new ParametersParameter { Name = element.InstanceType ?? string.Empty };
                 traceParam.Part.Add(elementPart);
 
                 // Add resource path extension if location is available
@@ -303,16 +305,16 @@ public sealed class ResultFormatter
                 {
                     // For complex types, serialize using Children() to get proper FHIR structure
                     var json = SerializeElementToJson(element);
-                    elementPart.MutableNode[$"value{element.InstanceType}"] = JsonNode.Parse(json);
+                    ((IMutableJsonNode)elementPart).MutableNode[$"value{element.InstanceType}"] = JsonNode.Parse(json);
                 }
             }
         }
     }
 
-    private static void AddDebugTraceParameter(ParametersJsonNode parameters, List<NodeEvaluationEntry> debugTraceEntries)
+    private static void AddDebugTraceParameter(Parameters parameters, List<NodeEvaluationEntry> debugTraceEntries)
     {
         // Create the debug-trace wrapper parameter
-        var debugTraceParam = new ParameterJsonNode { Name = "debug-trace" };
+        var debugTraceParam = new ParametersParameter { Name = "debug-trace" };
         parameters.Parameter.Add(debugTraceParam);
 
         // Group entries by their key
@@ -320,7 +322,7 @@ public sealed class ResultFormatter
 
         foreach (var group in groupedEntries)
         {
-            var debugParam = new ParameterJsonNode { Name = group.Key };
+            var debugParam = new ParametersParameter { Name = group.Key };
             debugTraceParam.Part.Add(debugParam);
 
             foreach (var entry in group)
@@ -330,7 +332,7 @@ public sealed class ResultFormatter
                 {
                     if (!string.IsNullOrEmpty(result.Location))
                     {
-                        var resourcePathPart = new ParameterJsonNode { Name = "resource-path" };
+                        var resourcePathPart = new ParametersParameter { Name = "resource-path" };
                         resourcePathPart.SetValue("valueString", result.Location);
                         debugParam.Part.Add(resourcePathPart);
                     }
@@ -341,7 +343,7 @@ public sealed class ResultFormatter
                 {
                     if (!string.IsNullOrEmpty(focusElement.Location))
                     {
-                        var focusPathPart = new ParameterJsonNode { Name = "focus-resource-path" };
+                        var focusPathPart = new ParametersParameter { Name = "focus-resource-path" };
                         focusPathPart.SetValue("valueString", focusElement.Location);
                         debugParam.Part.Add(focusPathPart);
                     }
@@ -350,7 +352,7 @@ public sealed class ResultFormatter
                 // Add this-resource-path part from ThisElement
                 if (entry.ThisElement != null && !string.IsNullOrEmpty(entry.ThisElement.Location))
                 {
-                    var thisPathPart = new ParameterJsonNode { Name = "this-resource-path" };
+                    var thisPathPart = new ParametersParameter { Name = "this-resource-path" };
                     thisPathPart.SetValue("valueString", entry.ThisElement.Location);
                     debugParam.Part.Add(thisPathPart);
                 }
@@ -358,7 +360,7 @@ public sealed class ResultFormatter
                 // Add index part
                 if (entry.Index.HasValue)
                 {
-                    var indexPart = new ParameterJsonNode { Name = "index" };
+                    var indexPart = new ParametersParameter { Name = "index" };
                     indexPart.SetValue("valueInteger", JsonValue.Create(entry.Index.Value));
                     debugParam.Part.Add(indexPart);
                 }
@@ -366,44 +368,46 @@ public sealed class ResultFormatter
         }
     }
 
-    private static void AddPart(ParameterJsonNode parent, string name, string value)
+    private static void AddPart(ParametersParameter parent, string name, string value)
     {
-        var part = new ParameterJsonNode { Name = name };
+        var part = new ParametersParameter { Name = name };
         part.SetValue("valueString", value);
         parent.Part.Add(part);
     }
 
-    private static void AddResourcePart(ParameterJsonNode parent, string name, ResourceJsonNode resource)
+    private static void AddResourcePart(ParametersParameter parent, string name, ResourceJsonNode resource)
     {
-        var part = new ParameterJsonNode { Name = name };
-        part.MutableNode["resource"] = JsonNode.Parse(resource.SerializeToString());
+        var part = new ParametersParameter { Name = name };
+        ((IMutableJsonNode)part).MutableNode["resource"] = JsonNode.Parse(resource.SerializeToString());
         parent.Part.Add(part);
     }
 
-    private static void SetTypedValue(ParameterJsonNode param, string instanceType, object value)
+    private static void SetTypedValue(ParametersParameter param, string instanceType, object value)
     {
         // Ignixa returns values in the correct FHIR format, just pass through
         var valueTypeName = $"value{char.ToUpperInvariant(instanceType[0])}{instanceType[1..]}";
         param.SetValue(valueTypeName, JsonValue.Create(value));
     }
 
-    private static void AddPathExtension(ParameterJsonNode param, string path)
+    private static void AddPathExtension(ParametersParameter param, string path)
     {
         AddExtensionToParam(param, ExtensionUrlResourcePath, path);
     }
 
-    private static void AddJsonValueExtension(ParameterJsonNode param, string jsonValue)
+    private static void AddJsonValueExtension(ParametersParameter param, string jsonValue)
     {
         AddExtensionToParam(param, ExtensionUrlJsonValue, jsonValue);
     }
 
-    private static void AddExtensionToParam(ParameterJsonNode param, string url, string value)
+    private static void AddExtensionToParam(ParametersParameter param, string url, string value)
     {
+        var paramMutableNode = ((IMutableJsonNode)param).MutableNode;
+
         // Get or create extension array
-        if (param.MutableNode["extension"] is not JsonArray extensionArray)
+        if (paramMutableNode["extension"] is not JsonArray extensionArray)
         {
             extensionArray = new JsonArray();
-            param.MutableNode["extension"] = extensionArray;
+            paramMutableNode["extension"] = extensionArray;
         }
 
         // Add new extension
