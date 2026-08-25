@@ -69,6 +69,14 @@ public class FunctionFhirPathTest
         };
     }
 
+    // The CapabilityStatement advertises "fhirpath"; keep this unversioned alias defaulting to R4.
+    [Function("FHIRPathTester")]
+    public async Task<IActionResult> RunFhirPathTestDefault(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath")] HttpRequest req)
+    {
+        return await ProcessFhirPathRequest(req, "R4");
+    }
+
     [Function("FHIRPathTester-R4")]
     public async Task<IActionResult> RunFhirPathTestR4(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath-r4")] HttpRequest req)
