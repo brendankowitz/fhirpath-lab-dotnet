@@ -5,6 +5,7 @@ using FhirPathLab_DotNetEngine.Models;
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.FhirPath.Parser;
+using Ignixa.FhirPath.Visitors;
 using Ignixa.Serialization;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification.Generated;
@@ -46,7 +47,8 @@ public class ResultFormatterTests
         string expression,
         string patientJson,
         string fhirVersion = "R5",
-        bool debugTrace = false)
+        bool debugTrace = false,
+        string? context = null)
     {
         var resource = ResourceJsonNode.Parse(patientJson);
         var schemaFactory = new SchemaProviderFactory();
@@ -54,7 +56,7 @@ public class ResultFormatterTests
         var evaluatorSvc = new ExpressionEvaluator(schemaFactory);
         var formatter = new ResultFormatter();
 
-        var (parsed, contextExpr, error) = analyzer.ParseAndAnalyze(expression, null, resource.ResourceType, fhirVersion);
+        var (parsed, contextExpr, error) = analyzer.ParseAndAnalyze(expression, context, resource.ResourceType, fhirVersion);
         if (error != null) throw new InvalidOperationException(error);
 
         var evalResults = evaluatorSvc.Evaluate(parsed!, contextExpr, resource, null, fhirVersion, debugTrace);
@@ -66,7 +68,8 @@ public class ResultFormatterTests
                 Expression = expression,
                 FhirVersion = fhirVersion,
                 Resource = resource,
-                DebugTrace = debugTrace
+                DebugTrace = debugTrace,
+                Context = context
             },
             ParsedExpression = parsed,
             Results = evalResults
@@ -470,5 +473,114 @@ public class ResultFormatterTests
         topLevelNames.Should().BeEquivalentTo(
             new[] { "parameters", "result", "debug-trace" },
             "only parameters, result, and debug-trace should be top-level");
+    }
+
+    [Fact]
+    public void GivenEvaluationError_WhenFormatted_ThenItIsIncludedInDebugOutcome()
+    {
+        // Arrange
+        var (result, json) = EvaluateAndFormat("name.family + 1", TestPatientJson);
+        var evaluationResult = result.Results.Single();
+        evaluationResult.Error.Should().NotBeNullOrEmpty();
+        var evaluationError = evaluationResult.Error!;
+        evaluationError.Should().Be(
+            "Expression evaluation error: Operator '+' is not defined for operands of type 'string' and 'integer'.");
+
+        // Act
+        var configParameter = json["parameter"]!.AsArray()
+            .Single(p => p?["name"]?.GetValue<string>() == "parameters")!;
+        var configParts = configParameter["part"]!.AsArray();
+        var debugOutcomes = configParts
+            .Where(p => p?["name"]?.GetValue<string>() == "debugOutcome")
+            .ToList();
+        debugOutcomes.Should().ContainSingle();
+        var issueDiagnostics = debugOutcomes.Single()!["resource"]!["issue"]!
+            .AsArray()
+            .Select(issue => issue!["diagnostics"]!.GetValue<string>())
+            .ToList();
+
+        // Assert
+        issueDiagnostics.Should().Contain(evaluationError);
+    }
+
+    [Fact]
+    public void GivenEvaluationError_WhenFormatted_ThenLegacyErrorRemains()
+    {
+        // Arrange
+        var (result, json) = EvaluateAndFormat("name.family + 1", TestPatientJson);
+        var evaluationError = result.Results.Single().Error!;
+
+        // Act
+        var legacyError = json["parameter"]!.AsArray()
+            .Single(p => p?["name"]?.GetValue<string>() == "error")!["valueString"]!
+            .GetValue<string>();
+
+        // Assert
+        legacyError.Should().Be(evaluationError);
+    }
+
+    [Fact]
+    public void GivenValidationAndEvaluationErrors_WhenFormatted_ThenOneDebugOutcomeContainsBoth()
+    {
+        // Arrange
+        var (result, _) = EvaluateAndFormat("name.family + true", TestPatientJson);
+        var validationIssue = new ValidationIssue
+        {
+            Severity = ValidationIssueSeverity.Warning,
+            Message = "Test validation issue",
+            Location = "Patient.name"
+        };
+        var resultWithValidationIssue = new FhirPathResult
+        {
+            Request = result.Request,
+            ParsedExpression = result.ParsedExpression! with { ValidationIssues = [validationIssue] },
+            Results = result.Results
+        };
+        var evaluationError = result.Results.Single().Error;
+        evaluationError.Should().NotBeNullOrEmpty();
+        var json = JsonNode.Parse(new ResultFormatter()
+            .FormatResult(resultWithValidationIssue)
+            .SerializeToString(pretty: true))!;
+
+        // Act
+        var configParameter = json["parameter"]!.AsArray()
+            .Single(p => p?["name"]?.GetValue<string>() == "parameters")!;
+        var configParts = configParameter["part"]!.AsArray();
+        var debugOutcomes = configParts
+            .Where(p => p?["name"]?.GetValue<string>() == "debugOutcome")
+            .ToList();
+        debugOutcomes.Should().ContainSingle();
+        var issueDiagnostics = debugOutcomes.Single()!["resource"]!["issue"]!
+            .AsArray()
+            .Select(issue => issue!["diagnostics"]!.GetValue<string>())
+            .ToList();
+
+        // Assert
+        issueDiagnostics.Should().Contain(validationIssue.Message);
+        issueDiagnostics.Should().Contain(evaluationError);
+    }
+
+    [Fact]
+    public void GivenOneFailingContext_WhenFormatted_ThenSuccessfulContextStillHasResult()
+    {
+        // Arrange
+        var (result, json) = EvaluateAndFormat(
+            "iif(family.exists(), family + 1, given)",
+            TestPatientJson,
+            context: "name");
+        result.Results.Should().HaveCount(2);
+        result.Results.Should().ContainSingle(r => r.Error != null);
+        result.Results.Should().ContainSingle(r => r.ContextPath == "Patient.name[1]" && r.Error == null);
+
+        // Act
+        var resultParameters = json["parameter"]!.AsArray()
+            .Where(p => p?["name"]?.GetValue<string>() == "result")
+            .ToList();
+
+        // Assert
+        resultParameters.Should().ContainSingle();
+        var resultParameter = resultParameters.Single()!;
+        resultParameter["valueString"]!.GetValue<string>().Should().Be("Patient.name[1]");
+        resultParameter["part"]!.AsArray().Single()!["valueString"]!.GetValue<string>().Should().Be("Johnny");
     }
 }

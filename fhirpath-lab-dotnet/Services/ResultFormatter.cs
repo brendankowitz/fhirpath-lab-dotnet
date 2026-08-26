@@ -97,14 +97,10 @@ public sealed class ResultFormatter
                 }
             }
 
-            // Add validation issues if any
-            if (result.ParsedExpression.ValidationIssues?.Count > 0)
-            {
-                AddValidationOutcome(configParam, result.ParsedExpression.ValidationIssues);
-            }
         }
 
         // Add evaluation results
+        var evaluationErrors = new List<(string ContextPath, string Error)>();
         foreach (var evalResult in result.Results)
         {
             if (evalResult.Error != null)
@@ -112,7 +108,8 @@ public sealed class ResultFormatter
                 var errorParam = new ParametersParameter { Name = "error" };
                 errorParam.SetValue("valueString", evalResult.Error);
                 parameters.Parameter.Add(errorParam);
-                return parameters;
+                evaluationErrors.Add((evalResult.ContextPath, evalResult.Error));
+                continue;
             }
 
             AddResultParameter(parameters, evalResult.ContextPath, evalResult.OutputValues, evalResult.TraceOutput);
@@ -122,6 +119,12 @@ public sealed class ResultFormatter
             {
                 AddDebugTraceParameter(parameters, evalResult.DebugTraceEntries);
             }
+        }
+
+        var validationIssues = result.ParsedExpression?.ValidationIssues;
+        if (validationIssues?.Count > 0 || evaluationErrors.Count > 0)
+        {
+            AddDebugOutcome(configParam, validationIssues, evaluationErrors);
         }
 
         return parameters;
@@ -198,11 +201,14 @@ public sealed class ResultFormatter
         return configParam;
     }
 
-    private static void AddValidationOutcome(ParametersParameter configParam, List<ValidationIssue> issues)
+    private static void AddDebugOutcome(
+        ParametersParameter configParam,
+        List<ValidationIssue>? validationIssues,
+        List<(string ContextPath, string Error)> evaluationErrors)
     {
         var outcome = new OperationOutcome();
 
-        foreach (var issue in issues)
+        foreach (var issue in validationIssues ?? [])
         {
             var issueComponent = new OperationOutcomeIssue
             {
@@ -213,6 +219,21 @@ public sealed class ResultFormatter
 
             if (!string.IsNullOrEmpty(issue.Location))
                 issueComponent.Expression.Add(issue.Location);
+
+            outcome.Issue.Add(issueComponent);
+        }
+
+        foreach (var (contextPath, error) in evaluationErrors)
+        {
+            var issueComponent = new OperationOutcomeIssue
+            {
+                SeverityCode = OperationOutcomeIssue.IssueSeverityCode.Error,
+                IssueTypeCode = OperationOutcomeIssue.IssueTypeCommon.Exception,
+                Diagnostics = error
+            };
+
+            if (!string.IsNullOrEmpty(contextPath))
+                issueComponent.Expression.Add(contextPath);
 
             outcome.Issue.Add(issueComponent);
         }
