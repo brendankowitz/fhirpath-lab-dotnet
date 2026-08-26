@@ -368,21 +368,15 @@ public class IgnixaApiTests : IAsyncLifetime
         
         var response = await _client.PostAsync($"{_baseUrl}/$fhirpath", content);
         
-        // The API may return either 400 (parse error) or 200 with an OperationOutcome
-        // Both are valid behaviors depending on engine implementation
-        if (response.StatusCode == HttpStatusCode.OK)
-        {
-            var responseJson = await response.Content.ReadAsStringAsync();
-            var outcome = _parser.Parse<OperationOutcome>(responseJson);
-            outcome.Issue.Should().Contain(
-                issue => issue.Severity == OperationOutcome.IssueSeverity.Error &&
-                    !string.IsNullOrWhiteSpace(issue.Diagnostics),
-                "invalid expression should produce an error issue with diagnostic details");
-        }
-        else
-        {
-            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        }
+        // The API may return either 400 (parse error) or 200 with an OperationOutcome.
+        response.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.BadRequest);
+
+        var responseJson = await response.Content.ReadAsStringAsync();
+        var outcome = _parser.Parse<OperationOutcome>(responseJson);
+        outcome.Issue.Should().Contain(
+            issue => issue.Severity == OperationOutcome.IssueSeverity.Error &&
+                !string.IsNullOrWhiteSpace(issue.Diagnostics),
+            "invalid expression should produce an error issue with diagnostic details");
     }
     
     [Fact]
