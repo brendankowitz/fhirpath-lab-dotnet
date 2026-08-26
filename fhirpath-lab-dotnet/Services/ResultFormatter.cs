@@ -96,7 +96,6 @@ public sealed class ResultFormatter
                     AddPart(configParam, "expectedReturnType", expectedType);
                 }
             }
-
         }
 
         // Add evaluation results
