@@ -214,13 +214,16 @@ public class IgnixaApiTests : IAsyncLifetime
         var parameters = CreateBasicRequest("Patient.name.family");
         var result = await PostFhirPathRequest("$fhirpath", parameters);
         
-        var parseDebugTree = result.Parameter.FirstOrDefault(p => p.Name == "parseDebugTree");
+        var outputParameters = result.Parameter.FirstOrDefault(p => p.Name == "parameters");
+        outputParameters.Should().NotBeNull("the response should contain output parameters");
+
+        var parseDebugTree = outputParameters!.Part.FirstOrDefault(p => p.Name == "parseDebugTree");
         parseDebugTree.Should().NotBeNull("AST should be returned in parseDebugTree parameter");
         parseDebugTree!.Value.Should().BeOfType<FhirString>();
         
         var ast = ((FhirString)parseDebugTree.Value).Value;
         ast.Should().NotBeNullOrWhiteSpace();
-        ast.Should().Contain("PropertyAccess");
+        ast.Should().Contain("ChildExpression");
     }
     
     [Fact]
@@ -229,7 +232,10 @@ public class IgnixaApiTests : IAsyncLifetime
         var parameters = CreateBasicRequest("name.where(use = 'official').family");
         var result = await PostFhirPathRequest("$fhirpath", parameters);
         
-        var parseDebugTree = result.Parameter.FirstOrDefault(p => p.Name == "parseDebugTree");
+        var outputParameters = result.Parameter.FirstOrDefault(p => p.Name == "parameters");
+        outputParameters.Should().NotBeNull("the response should contain output parameters");
+
+        var parseDebugTree = outputParameters!.Part.FirstOrDefault(p => p.Name == "parseDebugTree");
         parseDebugTree.Should().NotBeNull();
         
         var ast = ((FhirString)parseDebugTree!.Value).Value;
@@ -362,15 +368,16 @@ public class IgnixaApiTests : IAsyncLifetime
         
         var response = await _client.PostAsync($"{_baseUrl}/$fhirpath", content);
         
-        // The API may return either 400 (parse error) or 200 with error in body
+        // The API may return either 400 (parse error) or 200 with an OperationOutcome
         // Both are valid behaviors depending on engine implementation
         if (response.StatusCode == HttpStatusCode.OK)
         {
             var responseJson = await response.Content.ReadAsStringAsync();
-            var result = _parser.Parse<Parameters>(responseJson);
-            // Should have outcome or error parameter
-            var hasError = result.Parameter.Any(p => p.Name == "outcome" || p.Name == "error");
-            hasError.Should().BeTrue("Invalid expression should produce an error in the response");
+            var outcome = _parser.Parse<OperationOutcome>(responseJson);
+            outcome.Issue.Should().Contain(
+                issue => issue.Severity == OperationOutcome.IssueSeverity.Error &&
+                    !string.IsNullOrWhiteSpace(issue.Diagnostics),
+                "invalid expression should produce an error issue with diagnostic details");
         }
         else
         {
