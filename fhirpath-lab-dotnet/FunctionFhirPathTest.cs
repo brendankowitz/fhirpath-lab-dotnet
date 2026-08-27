@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
+using Ignixa.Models;
 using FhirPathLab_DotNetEngine.Models;
 using FhirPathLab_DotNetEngine.Services;
 
@@ -66,6 +67,14 @@ public class FunctionFhirPathTest
             ContentType = "application/fhir+json",
             StatusCode = (int)HttpStatusCode.OK
         };
+    }
+
+    // The CapabilityStatement advertises "fhirpath"; keep this unversioned alias defaulting to R4.
+    [Function("FHIRPathTester")]
+    public async Task<IActionResult> RunFhirPathTestDefault(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = "$fhirpath")] HttpRequest req)
+    {
+        return await ProcessFhirPathRequest(req, "R4");
     }
 
     [Function("FHIRPathTester-R4")]
@@ -131,25 +140,25 @@ public class FunctionFhirPathTest
         };
     }
 
-    private static async Task<ParametersJsonNode> ParseOperationParameters(HttpRequest req)
+    private static async Task<Parameters> ParseOperationParameters(HttpRequest req)
     {
         if (req.Method != "POST")
         {
-            var parameters = new ParametersJsonNode();
+            var parameters = new Parameters();
             foreach (var key in req.Query.Keys)
             {
-                var param = new ParameterJsonNode { Name = key };
+                var param = new ParametersParameter { Name = key };
                 param.SetValue("valueString", req.Query[key].ToString());
                 parameters.Parameter.Add(param);
             }
             return parameters;
         }
 
-        return await JsonSourceNodeFactory.ParseAsync<ParametersJsonNode>(req.Body, CancellationToken.None);
+        return await JsonSourceNodeFactory.ParseAsync<Parameters>(req.Body, CancellationToken.None);
     }
 
     private static async Task<(FhirPathRequest? Request, string? Error, string? ErrorDiagnostics)> BuildFhirPathRequest(
-        ParametersJsonNode operationParameters,
+        Parameters operationParameters,
         string fhirVersion)
     {
         var resourceParam = operationParameters.FindParameter("resource");

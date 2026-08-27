@@ -1,5 +1,6 @@
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
+using Ignixa.Models;
 
 namespace FhirPathLab_DotNetEngine.Models;
 
@@ -36,7 +37,7 @@ public sealed class FhirPathRequest
     /// <summary>
     /// Optional variables to make available during expression evaluation.
     /// </summary>
-    public ParameterJsonNode? Variables { get; init; }
+    public ParametersParameter? Variables { get; init; }
 
     /// <summary>
     /// Whether to include trace output in the response.

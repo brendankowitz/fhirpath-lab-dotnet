@@ -2,10 +2,12 @@ using System.Text.Json.Nodes;
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.FhirPath.Expressions;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using FhirPathLab_DotNetEngine.Models;
+using Expression = Ignixa.FhirPath.Expressions.Expression;
 
 namespace FhirPathLab_DotNetEngine.Services;
 
@@ -34,7 +36,7 @@ public sealed class ExpressionEvaluator
     public Dictionary<string, IElement?> GetEvaluationContexts(
         IElement? inputElement,
         Expression? contextExpression,
-        ParameterJsonNode? variables,
+        ParametersParameter? variables,
         ResourceJsonNode? resource,
         ISchema schema)
     {
@@ -70,7 +72,7 @@ public sealed class ExpressionEvaluator
         ParsedExpression parsedExpression,
         Expression? contextExpression,
         ResourceJsonNode? resource,
-        ParameterJsonNode? variables,
+        ParametersParameter? variables,
         string fhirVersion,
         bool debugTrace = false)
     {
@@ -117,7 +119,7 @@ public sealed class ExpressionEvaluator
     /// Creates an evaluation context with the provided variables and resource.
     /// </summary>
     public EvaluationContext CreateEvaluationContext(
-        ParameterJsonNode? pcVariables,
+        ParametersParameter? pcVariables,
         ResourceJsonNode? resource,
         ISchema schema,
         List<TraceEntry>? traceOutput)
@@ -138,6 +140,7 @@ public sealed class ExpressionEvaluator
         {
             elementResolver = new LightweightElementResolver(schemaProvider);
             evalContext = fhirCtx.WithElementResolver(elementResolver.Resolve);
+            evalContext = evalContext.WithInstanceCreator(_schemaFactory.GetInstanceFactory(schemaProvider).Create);
         }
 
         // Set %resource variable if a resource is provided
@@ -187,7 +190,7 @@ public sealed class ExpressionEvaluator
                 .SelectMany(ext => ext.Children("value"))
                 .ToList();
 
-            if (valueElements.Count > 0)
+            if (valueElements.Count > 0 && varParam.Name != null)
             {
                 evalContext = evalContext.WithEnvironmentVariable(varParam.Name, valueElements);
             }
